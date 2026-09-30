@@ -1,0 +1,23 @@
+# Render blueprint for the CanTrack API (free tier). Secrets are set in the Render dashboard, not here.
+services:
+  - type: web
+    name: cantrack-api
+    runtime: docker
+    rootDir: apps/api-py
+    plan: free
+    healthCheckPath: /docs
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: OLLAMA_API_KEY
+        sync: false
+      - key: OLLAMA_HOST
+        value: https://ollama.com
+      - key: OLLAMA_VISION_MODEL
+        value: gemma4:31b
+      - key: WEB_ORIGIN
+        sync: false
+      - key: AUTH_RESET_REDIRECT_URL
+        sync: false
