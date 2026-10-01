@@ -483,11 +483,14 @@ class TestAccept:
         profile = save_profile(fake_client)
         dog_a = create_dog(fake_client, name="Firulais")
         dog_b = create_dog(fake_client, token="token-b", name="Rex")
+        # A third dog: the three windows overlap pairwise on the walker side,
+        # and per-dog they would trip the 409 double-booking guard.
+        dog_c = create_dog(fake_client, token="token-b", name="Luna")
         early = post_request(fake_client, profile["walkerId"], dog_a["id"],
                              requested_time=T0930).json()
         middle = post_request(fake_client, profile["walkerId"], dog_b["id"], token="token-b",
                              requested_time=T10).json()
-        late = post_request(fake_client, profile["walkerId"], dog_a["id"],
+        late = post_request(fake_client, profile["walkerId"], dog_c["id"], token="token-b",
                             requested_time=T1015).json()
         fake_client.post(f"/requests/{early['id']}/accept", headers=bearer("token-w"))
         fake_client.post(f"/requests/{middle['id']}/accept", headers=bearer("token-w"))
@@ -504,8 +507,10 @@ class TestAccept:
         dog_b = create_dog(fake_client, token="token-b", name="Rex")
         pending = post_request(fake_client, profile["walkerId"], dog_a["id"],
                                requested_time=T10).json()
-        declined = post_request(fake_client, profile["walkerId"], dog_a["id"],
-                                requested_time=T1030).json()
+        # dog_b for the declined one: creating it on dog_a would overlap the
+        # still-pending dog_a request and trip the 409 double-booking guard.
+        declined = post_request(fake_client, profile["walkerId"], dog_b["id"],
+                                token="token-b", requested_time=T1030).json()
         fake_client.post(f"/requests/{declined['id']}/decline", headers=bearer("token-w"))
         overlapping = post_request(fake_client, profile["walkerId"], dog_b["id"],
                                    token="token-b", requested_time=T1030).json()
@@ -668,7 +673,7 @@ class TestCancel:
         assert res.status_code == 400
         assert res.json() == CANCEL_STATE
 
-    def test_the_walker_cannot_cancel(self, fake_client):
+    def test_the_walker_cannot_cancel(self, fake_client, fake):
         profile = save_profile(fake_client)
         dog = create_dog(fake_client)
         rid = post_request(fake_client, profile["walkerId"], dog["id"]).json()["id"]

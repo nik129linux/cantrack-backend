@@ -3,6 +3,7 @@
 from .avl_tree import AvlTree
 from .circular_list import CircularList
 from .doubly_list import DoublyLinkedList
+from .interval_tree import IntervalTree
 from .queue import Queue
 from .singly_list import SinglyLinkedList
 from .stack import Stack
@@ -12,6 +13,7 @@ __all__ = [
     "AvlTree",
     "CircularList",
     "DoublyLinkedList",
+    "IntervalTree",
     "Queue",
     "ShortestPath",
     "SinglyLinkedList",

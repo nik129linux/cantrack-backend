@@ -7,6 +7,7 @@ import it without any ``SUPABASE_*`` variable set).
 """
 
 import os
+from datetime import datetime, timezone
 from functools import lru_cache
 
 from fastapi import Depends, HTTPException, Request, status
@@ -73,6 +74,20 @@ def get_vision() -> OllamaVision:
         An ``OllamaVision`` configured from the environment.
     """
     return OllamaVision.from_env()
+
+
+def get_now() -> datetime:
+    """Return the current time as an aware UTC datetime.
+
+    Exposed as a dependency (like ``get_supabase`` or ``get_embedder``) so
+    tests can freeze the clock through ``app.dependency_overrides``: the S1
+    request endpoints use it to refuse a ``requestedTime`` in the past. Not
+    cached — every call must see the real current time in production.
+
+    Returns:
+        ``datetime.now(timezone.utc)``.
+    """
+    return datetime.now(timezone.utc)
 
 
 def get_current_user(

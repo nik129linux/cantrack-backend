@@ -16,7 +16,7 @@ from supabase_auth.types import User
 from ..ai.embeddings import ClipEmbedder
 from ..db import first_row, run_query
 from ..deps import get_current_user, get_embedder, get_supabase
-from ..schemas import CreateDogBody, UpdateDogBody
+from ..schemas import CreateDogBody, DogProfileBody, UpdateDogBody
 from ..uploads import (
     MAX_REFERENCE_PHOTOS,
     PHOTO_COUNT_MESSAGE,
@@ -218,3 +218,67 @@ def delete_dog(
     )
     first_row(rows, NOT_FOUND_MESSAGE)
     return {"message": DELETED_MESSAGE}
+
+
+@router.put("/{dog_id}/profile")
+def save_dog_profile(
+    dog_id: uuid.UUID,
+    body: DogProfileBody,
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+) -> dict[str, Any]:
+    """Replace the S1 questionnaire of one of the caller's dogs.
+
+    The eight answers live in the ``dogs.profile`` jsonb column. A PUT replaces
+    the whole questionnaire, so a partial answer never merges with a stale one,
+    and only the dog's owner can write it — anybody else gets the same 404 as
+    for a dog that does not exist, and nothing changes.
+
+    Args:
+        dog_id: The dog the questionnaire describes.
+        body: The eight answers (validated enums and bool, optional texts).
+        user: The authenticated owner.
+        supabase: The Supabase client used to read and write the row.
+
+    Returns:
+        The stored questionnaire in the camelCase wire shape.
+
+    Raises:
+        HTTPException: 404 if the dog is not the caller's; 500 on a database
+            error.
+    """
+    first_row(
+        run_query(
+            supabase.table(DOGS_TABLE)
+            .select("id")
+            .eq("id", dog_id)
+            .eq("owner_id", user.id)
+        ),
+        NOT_FOUND_MESSAGE,
+    )
+    profile = {
+        "size": body.size,
+        "temperament": body.temperament,
+        "energy": body.energy,
+        "leash_trained": body.leashTrained,
+        "allergies": body.allergies,
+        "medical_notes": body.medicalNotes,
+        "vet_contact": body.vetContact,
+        "emergency_contact": body.emergencyContact,
+    }
+    run_query(
+        supabase.table(DOGS_TABLE)
+        .update({"profile": profile})
+        .eq("id", dog_id)
+        .eq("owner_id", user.id)
+    )
+    return {
+        "size": body.size,
+        "temperament": body.temperament,
+        "energy": body.energy,
+        "leashTrained": body.leashTrained,
+        "allergies": body.allergies,
+        "medicalNotes": body.medicalNotes,
+        "vetContact": body.vetContact,
+        "emergencyContact": body.emergencyContact,
+    }

@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool
 
 UserRole = Literal["walker", "owner"]
 
@@ -122,3 +122,55 @@ class RoutePathBody(BaseModel):
     edges: list[PathEdgeBody] = Field(default_factory=list)
     start: str = Field(min_length=1)
     end: str = Field(min_length=1)
+
+class SaveWalkerProfileBody(BaseModel):
+    """Body of ``PUT /walker-profile`` (S1).
+
+    The profile always belongs to the caller (``walker_id`` comes from the
+    bearer token), and the price is a non-negative integer in COP. Any other
+    field sent by the client is dropped by the schema.
+    """
+
+    displayName: str = Field(min_length=1)
+    bio: str | None = None
+    serviceArea: str | None = None
+    pricePerWalk: int = Field(ge=0)
+
+
+class DogProfileBody(BaseModel):
+    """Body of ``PUT /dogs/{dog_id}/profile`` — the S1 questionnaire.
+
+    All eight fields are declared, the four enums/bool are required and the
+    four free-text ones are optional; a PUT replaces the whole questionnaire,
+    so nothing is merged with what was stored before.
+    """
+
+    size: Literal["small", "medium", "large"]
+    temperament: Literal["friendly", "shy", "reactive"]
+    energy: Literal["low", "medium", "high"]
+    # Strict: a real JSON boolean, never a coerced string ("yes" must be a 400).
+    leashTrained: StrictBool
+    allergies: str | None = None
+    medicalNotes: str | None = None
+    vetContact: str | None = None
+    emergencyContact: str | None = None
+
+
+class CreateRequestBody(BaseModel):
+    """Body of ``POST /requests`` (S1).
+
+    The owner is always the caller, and ``price_cop`` is never taken from the
+    body: the server copies it from the walker's profile. Coordinates are the
+    pin the owner dropped (no geocoding service), so they must be valid WGS84
+    numbers; ``requestedTime`` is an ISO-8601 string the router parses to
+    enforce the timezone offset and the future-time rule.
+    """
+
+    walkerId: str = Field(min_length=1)
+    dogId: str = Field(min_length=1)
+    # No min_length on purpose: the empty string must reach the router's
+    # ISO-8601 parser and answer the exact TIME_MESSAGE 400, not pydantic's
+    # generic validation list.
+    requestedTime: str
+    pickupLat: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    pickupLng: float = Field(ge=-180, le=180, allow_inf_nan=False)
