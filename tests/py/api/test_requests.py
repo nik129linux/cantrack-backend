@@ -250,7 +250,7 @@ class TestCreate:
 
 class TestOwnerList:
     def test_owner_sees_their_own_requests_newest_first(self, fake_client, fake):
-        profile = save_profile(fake_client)
+        save_profile(fake_client)
         dog = create_dog(fake_client)
         old = seed_request(fake, dog["id"], T09, requested_time=T10)
         new = seed_request(fake, dog["id"], T10, requested_time=T11)

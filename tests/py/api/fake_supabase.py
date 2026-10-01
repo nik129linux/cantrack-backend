@@ -16,6 +16,35 @@ from typing import Any
 
 from supabase_auth.errors import AuthApiError
 
+# Postgres/PostgREST normalizes every timestamptz to UTC on the way back
+# (`2026-10-05T10:00:00-05:00` is stored and returned as
+# `2026-10-05T15:00:00+00:00`). The fake models that for the timestamp columns
+# CanTrack writes, so tests cannot pass by relying on a verbatim echo of a
+# non-UTC input. Values that do not parse as ISO-8601 are left untouched:
+# rejecting them is the API's job (pydantic), not the database double's.
+TIMESTAMP_COLUMNS = frozenset({"requested_time", "responded_at", "created_at"})
+
+
+def _normalize_utc_timestamp(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        return value
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _normalize_timestamps(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    return {
+        key: _normalize_utc_timestamp(value) if key in TIMESTAMP_COLUMNS else value
+        for key, value in payload.items()
+    }
+
 
 class FakeQuery:
     def __init__(self, db: "FakeSupabase", table: str) -> None:
@@ -78,14 +107,14 @@ class FakeQuery:
             row = {
                 "id": str(uuid.uuid4()),
                 "created_at": datetime.now(timezone.utc).isoformat(),
-                **self._payload,
+                **_normalize_timestamps(self._payload),
             }
             rows.append(row)
             return SimpleNamespace(data=[dict(row)])
         matched = [r for r in rows if self._matches(r)]
         if self._op == "update":
             for row in matched:
-                row.update(self._payload)
+                row.update(_normalize_timestamps(self._payload))
             return SimpleNamespace(data=[dict(r) for r in matched])
         if self._op == "delete":
             for row in matched:
@@ -124,6 +153,6 @@ class FakeSupabase:
         self.auth.users_by_token[token] = user
 
     def seed(self, table: str, **row: Any) -> dict[str, Any]:
-        saved = {"id": str(uuid.uuid4()), **row}
+        saved = {"id": str(uuid.uuid4()), **_normalize_timestamps(row)}
         self.tables.setdefault(table, []).append(saved)
         return saved
