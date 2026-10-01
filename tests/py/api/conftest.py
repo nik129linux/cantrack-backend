@@ -14,7 +14,13 @@ from fastapi.testclient import TestClient
 from supabase_auth.types import Session, User
 
 from cantrack_api.app import create_app
-from cantrack_api.deps import get_current_user, get_embedder, get_supabase, get_vision
+from cantrack_api.deps import (
+    get_auth_client,
+    get_current_user,
+    get_embedder,
+    get_supabase,
+    get_vision,
+)
 
 from .fake_ai import FakeEmbedder, FakeVision
 from .fake_supabase import FakeSupabase
@@ -50,6 +56,7 @@ def supabase() -> MagicMock:
 def app(supabase) -> FastAPI:
     application = create_app()
     application.dependency_overrides[get_supabase] = lambda: supabase
+    application.dependency_overrides[get_auth_client] = lambda: supabase
 
     # The guard has no production route yet (dogs/routes come next), so the
     # suite mounts one probe route that depends on it.
@@ -105,6 +112,7 @@ def vision() -> FakeVision:
 def fake_client(fake, embedder, vision, fake_clock) -> TestClient:
     application = create_app()
     application.dependency_overrides[get_supabase] = lambda: fake
+    application.dependency_overrides[get_auth_client] = lambda: fake
     application.dependency_overrides[get_embedder] = lambda: embedder
     application.dependency_overrides[get_vision] = lambda: vision
     # get_now is the overridable clock dependency the S1 endpoints use for the

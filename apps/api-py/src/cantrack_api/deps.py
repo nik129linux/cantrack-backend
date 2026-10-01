@@ -90,6 +90,28 @@ def get_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def get_auth_client() -> Client:
+    """Return a FRESH Supabase client for one sign-up / login / reset call.
+
+    supabase-py reacts to a sign-in by swapping the client's REST Authorization
+    header to the user's JWT. On the shared, cached service-role client from
+    ``get_supabase`` that silently turns every later table query into a query
+    *as that user* (so row level security blocks it, and concurrent requests
+    would borrow each other's identity). Auth calls therefore never touch the
+    shared client: each one gets its own throwaway instance.
+
+    Returns:
+        A new ``supabase`` client built from the service-role key.
+
+    Raises:
+        KeyError: If ``SUPABASE_URL`` or ``SUPABASE_SERVICE_ROLE_KEY`` is unset.
+    """
+    return create_client(
+        os.environ["SUPABASE_URL"],
+        os.environ["SUPABASE_SERVICE_ROLE_KEY"],
+    )
+
+
 def get_current_user(
     request: Request,
     supabase: Client = Depends(get_supabase),

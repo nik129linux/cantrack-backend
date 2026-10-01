@@ -190,3 +190,46 @@ class TestAuthGuard:
         supabase.auth.get_user.return_value = None
         res = client.get("/_whoami", headers={"Authorization": "Bearer bad"})
         assert res.status_code == 401
+
+
+class TestAuthNeverTouchesTheSharedDataClient:
+    """supabase-py swaps a client's REST Authorization header to the user's JWT on sign-in. If the
+    cached service-role data client served auth calls, every later table query would run as that
+    user and row level security would block it (found against the real project). Auth routes must
+    use their own throwaway client (`get_auth_client`) and never `get_supabase`."""
+
+    class Explosive:
+        def __getattr__(self, name):
+            raise AssertionError(f"the shared data client was used by an auth route ({name})")
+
+    @pytest.fixture
+    def isolated(self, app, supabase):
+        from cantrack_api.deps import get_supabase
+
+        app.dependency_overrides[get_supabase] = lambda: self.Explosive()
+        return supabase
+
+    def test_login_signup_and_reset_use_only_the_auth_client(self, client, isolated):
+        isolated.auth.sign_in_with_password.return_value = SimpleNamespace(
+            session=make_session("t"), user=make_user()
+        )
+        isolated.auth.sign_up.return_value = AuthResponse(user=make_user(), session=None)
+        assert client.post(
+            "/auth/login", json={"email": "walker@example.com", "password": PASSWORD}
+        ).status_code == 200
+        assert client.post("/auth/signup", json=signup_body()).status_code == 201
+        assert client.post(
+            "/auth/reset-password", json={"email": "walker@example.com"}
+        ).status_code == 200
+
+    def test_get_auth_client_returns_a_new_client_each_time_and_get_supabase_a_shared_one(
+        self, monkeypatch
+    ):
+        from cantrack_api import deps
+
+        monkeypatch.setenv("SUPABASE_URL", "http://localhost:54321")
+        monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "x" * 40)
+        deps.get_supabase.cache_clear()
+        assert deps.get_auth_client() is not deps.get_auth_client()
+        assert deps.get_supabase() is deps.get_supabase()
+        deps.get_supabase.cache_clear()

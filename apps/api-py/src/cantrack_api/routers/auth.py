@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
 from supabase_auth.errors import AuthError
 
-from ..deps import get_supabase
+from ..deps import get_auth_client
 from ..schemas import LoginBody, ResetPasswordBody, SignupBody
 
 router = APIRouter(prefix="/auth")
@@ -20,7 +20,7 @@ INVALID_CREDENTIALS_MESSAGE = "Invalid login credentials."
 @router.post("/signup", status_code=status.HTTP_201_CREATED)
 def signup(
     body: SignupBody,
-    supabase: Client = Depends(get_supabase),
+    supabase: Client = Depends(get_auth_client),
 ) -> dict[str, Any]:
     """Create an account for a walker or an owner.
 
@@ -59,7 +59,7 @@ def signup(
 @router.post("/login")
 def login(
     body: LoginBody,
-    supabase: Client = Depends(get_supabase),
+    supabase: Client = Depends(get_auth_client),
 ) -> dict[str, Any]:
     """Exchange email and password for a session.
 
@@ -96,7 +96,7 @@ def login(
 @router.post("/reset-password")
 def reset_password(
     body: ResetPasswordBody,
-    supabase: Client = Depends(get_supabase),
+    supabase: Client = Depends(get_auth_client),
 ) -> dict[str, str]:
     """Email the user a link that lets them choose a new password.
 
