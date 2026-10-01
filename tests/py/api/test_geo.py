@@ -21,8 +21,12 @@ class TestKnownDistances:
         distance = haversine_km(6.2476, -75.5658, 4.7110, -74.0721)
         assert distance == pytest.approx(240.0, abs=20.0)
 
-    def test_equator_quarter_turn_is_about_10_018_km(self):
-        assert haversine_km(0.0, 0.0, 0.0, 90.0) == pytest.approx(10018.0, abs=10.0)
+    def test_equator_quarter_turn_is_about_10_007_km(self):
+        # A quarter of a great circle on the MEAN radius (the one the pole
+        # test pins): 6371.0088 km * pi/2 ~ 10007.5 km. The previous 10018
+        # was a quarter of the EQUATORIAL circumference (2*pi*6378.137/4),
+        # which no single radius satisfies together with the pole test.
+        assert haversine_km(0.0, 0.0, 0.0, 90.0) == pytest.approx(10007.5, abs=10.0)
 
     def test_pole_to_pole_is_half_the_circumference(self):
         assert haversine_km(90.0, 0.0, -90.0, 0.0) == pytest.approx(20015.0, abs=20.0)
