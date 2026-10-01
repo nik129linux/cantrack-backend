@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
+from storage3.exceptions import StorageApiError
 from supabase_auth.errors import AuthApiError
 
 # Postgres/PostgREST normalizes every timestamptz to UTC on the way back
@@ -128,6 +129,74 @@ class FakeQuery:
         return SimpleNamespace(data=[dict(r) for r in matched])
 
 
+class FakeStorageBucket:
+    """Double of ``storage3``'s ``SyncBucketProxy`` object API.
+
+    Copied from the installed library (storage3/_sync/file_api.py), not from
+    memory: ``upload(path, file, file_options=None)`` returns an
+    ``UploadResponse``-shaped object (``.path`` / ``.full_path`` / ``.fullPath``)
+    and raises ``StorageApiError(..., "duplicate", 409)`` for an existing path;
+    ``create_signed_url(path, expires_in)`` returns the ``SignedUrlResponse``
+    dict ``{"signedURL": ..., "signedUrl": ...}`` and raises
+    ``StorageApiError(..., "not_found", 404)`` for a missing object;
+    ``remove(paths)`` returns a list of dicts; ``get_public_url`` is recorded
+    so tests can assert it is NEVER called (the bucket is private). Upload
+    calls record the ``file_options`` verbatim (4th element of the call
+    tuple) so tests can pin the stored ``content-type`` — which the API must
+    derive from the magic bytes, never from the client's header.
+    """
+
+    def __init__(self, store: "FakeStorage", bucket: str) -> None:
+        self._store = store
+        self.id = bucket
+
+    def upload(self, path: str, file: Any, file_options: Any = None) -> SimpleNamespace:
+        self._store.calls.append((self.id, "upload", path, file_options))
+        if self._store.fail_upload_path == path:
+            raise StorageApiError("Storage unavailable", "storage_error", 500)
+        if (self.id, path) in self._store.objects:
+            raise StorageApiError("The resource already exists", "duplicate", 409)
+        data = file if isinstance(file, bytes) else file.read()
+        self._store.objects[(self.id, path)] = data
+        return SimpleNamespace(path=path, full_path=f"{self.id}/{path}", fullPath=f"{self.id}/{path}")
+
+    def create_signed_url(self, path: str, expires_in: int, options: Any = None) -> dict[str, Any]:
+        self._store.calls.append((self.id, "sign", path, expires_in))
+        if (self.id, path) not in self._store.objects:
+            raise StorageApiError("Object not found", "not_found", 404)
+        url = f"https://supabase.example/signed/{self.id}/{path}?expires={expires_in}"
+        return {"signedURL": url, "signedUrl": url}
+
+    def remove(self, paths: list[str]) -> list[dict[str, Any]]:
+        removed: list[dict[str, Any]] = []
+        for path in paths:
+            self._store.calls.append((self.id, "remove", path))
+            if path in self._store.fail_remove_paths:
+                raise StorageApiError("remove failed", "storage_error", 500)
+            self._store.objects.pop((self.id, path), None)
+            removed.append({"name": path})
+        return removed
+
+    def get_public_url(self, path: str, options: Any = None) -> str:
+        # The checkout bucket is private: any call here is a bug the tests see.
+        self._store.calls.append((self.id, "public", path))
+        return f"https://supabase.example/public/{self.id}/{path}"
+
+
+class FakeStorage:
+    """Double of the ``supabase.storage`` client: ``from_(bucket)`` only."""
+
+    def __init__(self) -> None:
+        self.buckets: dict[str, FakeStorageBucket] = {}
+        self.objects: dict[tuple[str, str], bytes] = {}
+        self.calls: list[tuple] = []
+        self.fail_upload_path: str | None = None
+        self.fail_remove_paths: set[str] = set()
+
+    def from_(self, bucket: str) -> FakeStorageBucket:
+        return self.buckets.setdefault(bucket, FakeStorageBucket(self, bucket))
+
+
 class FakeAuth:
     def __init__(self) -> None:
         self.users_by_token: dict[str, Any] = {}
@@ -142,6 +211,7 @@ class FakeAuth:
 class FakeSupabase:
     def __init__(self) -> None:
         self.auth = FakeAuth()
+        self.storage = FakeStorage()
         self.tables: dict[str, list[dict[str, Any]]] = {}
         self.queries: list[tuple[str, str, list[tuple[str, Any]]]] = []
         self.fail_with: Exception | None = None

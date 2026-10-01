@@ -1,3 +1,5 @@
+import random
+
 import pytest
 
 from cantrack_api.structures import DoublyLinkedList
@@ -75,3 +77,47 @@ def test_remove_only_item_leaves_usable_empty_list():
 def test_remove_at_out_of_range_raises(index):
     with pytest.raises(IndexError):
         make("a").remove_at(index)
+
+
+class TestScaleAndRandomized:
+    """S3 brief: the timeline is a DoublyLinkedList, so 10 000 events must
+    keep exact order in both directions without recursion, and random
+    append/prepend/remove sequences must match a brute-force list."""
+
+    def test_10_000_appends_keep_exact_order_both_ways(self):
+        dll = DoublyLinkedList()
+        for i in range(10_000):
+            dll.append(i)
+        assert dll.size() == 10_000
+        assert dll.to_array() == list(range(10_000))
+        assert dll.to_array_reverse() == list(range(9_999, -1, -1))
+
+    def test_10_000_prepends_keep_exact_order_both_ways(self):
+        dll = DoublyLinkedList()
+        for i in range(10_000):
+            dll.prepend(i)
+        assert dll.to_array() == list(range(9_999, -1, -1))
+        assert dll.to_array_reverse() == list(range(10_000))
+
+    def test_randomized_ops_match_a_brute_force_list(self):
+        rng = random.Random(20261104)
+        dll = DoublyLinkedList()
+        model: list[int] = []
+        for step in range(500):
+            if rng.random() < 0.5:
+                dll.append(step)
+                model.append(step)
+            else:
+                dll.prepend(step)
+                model.insert(0, step)
+            if step % 50 == 0:
+                assert dll.to_array() == model
+                assert dll.to_array_reverse() == list(reversed(model))
+        while model:
+            index = rng.randrange(len(model))
+            dll.remove_at(index)
+            del model[index]
+            assert dll.to_array() == model
+        assert dll.size() == 0
+        assert dll.to_array() == []
+        assert dll.to_array_reverse() == []
