@@ -108,7 +108,9 @@ def _dogs_by_id(supabase: Client, dog_ids: list[str]) -> dict[str, dict[str, Any
     unique = sorted(set(dog_ids))
     if not unique:
         return {}
-    rows = run_query(supabase.table(DOGS_TABLE).select("*").in_("id", unique))
+    rows = run_query(
+        supabase.table(DOGS_TABLE).select("id,name,breed,profile").in_("id", unique)
+    )
     return {row["id"]: row for row in rows}
 
 
