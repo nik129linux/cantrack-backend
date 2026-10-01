@@ -174,3 +174,17 @@ class CreateRequestBody(BaseModel):
     requestedTime: str
     pickupLat: float = Field(ge=-90, le=90, allow_inf_nan=False)
     pickupLng: float = Field(ge=-180, le=180, allow_inf_nan=False)
+
+
+class SuggestPlanBody(BaseModel):
+    """Body of ``POST /plans/suggest`` (S2).
+
+    ``date`` is validated by the router with an exact error message (a plain
+    string here on purpose, so "tomorrow" answers the pinned 400 instead of
+    pydantic's generic list). ``utcOffsetMinutes`` shifts the local-day window
+    against the UTC-normalized timestamps; the browser sends
+    ``-(new Date().getTimezoneOffset())``.
+    """
+
+    date: str
+    utcOffsetMinutes: int = Field(default=0, ge=-1440, le=1440)

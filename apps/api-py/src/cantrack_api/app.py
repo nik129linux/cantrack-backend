@@ -8,7 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .routers import auth, dogs, requests, routes, walker_profiles
+from .routers import auth, clients, dogs, plans, requests, routes, walker_profiles
 
 DEFAULT_WEB_ORIGIN = "http://localhost:5173"
 
@@ -66,4 +66,6 @@ def create_app() -> FastAPI:
     application.include_router(routes.router)
     application.include_router(walker_profiles.router)
     application.include_router(requests.router)
+    application.include_router(clients.router)
+    application.include_router(plans.router)
     return application

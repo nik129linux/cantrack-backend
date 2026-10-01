@@ -7,6 +7,7 @@ from .interval_tree import IntervalTree
 from .queue import Queue
 from .singly_list import SinglyLinkedList
 from .stack import Stack
+from .union_find import UnionFind
 from .weighted_graph import ShortestPath, WeightedGraph
 
 __all__ = [
@@ -18,5 +19,6 @@ __all__ = [
     "ShortestPath",
     "SinglyLinkedList",
     "Stack",
+    "UnionFind",
     "WeightedGraph",
 ]
