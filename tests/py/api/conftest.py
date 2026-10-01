@@ -75,6 +75,22 @@ def fake() -> FakeSupabase:
     return db
 
 
+# Fixed "now" for time-sensitive endpoints (S1: requestedTime must be in the
+# future). 2026-10-01T00:00:00+00:00 keeps the 2026-10-05 constants of the
+# request tests valid. Mutate `fake_clock.now` inside a test to move time.
+FIXED_NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
+
+
+class FakeClock:
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+
+
+@pytest.fixture
+def fake_clock() -> FakeClock:
+    return FakeClock(FIXED_NOW)
+
+
 @pytest.fixture
 def embedder() -> FakeEmbedder:
     return FakeEmbedder()
@@ -86,11 +102,22 @@ def vision() -> FakeVision:
 
 
 @pytest.fixture
-def fake_client(fake, embedder, vision) -> TestClient:
+def fake_client(fake, embedder, vision, fake_clock) -> TestClient:
     application = create_app()
     application.dependency_overrides[get_supabase] = lambda: fake
     application.dependency_overrides[get_embedder] = lambda: embedder
     application.dependency_overrides[get_vision] = lambda: vision
+    # get_now is the overridable clock dependency the S1 endpoints use for the
+    # "requestedTime must be in the future" rule. It is imported lazily so this
+    # conftest stays importable (and the pre-existing suite stays green) while
+    # the dependency does not exist yet — the S1 tests are red either way
+    # because the endpoints themselves are missing until s1-impl.
+    try:
+        from cantrack_api.deps import get_now
+    except ImportError:
+        pass
+    else:
+        application.dependency_overrides[get_now] = lambda: fake_clock.now
     return TestClient(application)
 
 
