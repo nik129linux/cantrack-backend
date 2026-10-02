@@ -188,3 +188,17 @@ class SuggestPlanBody(BaseModel):
 
     date: str
     utcOffsetMinutes: int = Field(default=0, ge=-1440, le=1440)
+
+
+class UpdateCheckoutNoteBody(BaseModel):
+    """Body of ``PATCH /checkouts/{id}`` (S3).
+
+    ``note`` is the walker's own text and the ONLY field this endpoint
+    writes — the AI provenance (``ai_note``/``dog_visible``) is never
+    touched by a human edit. ``null`` clears the note for a photos-only
+    checkout. The 200-character cap is enforced by the router (exact 400
+    message), not here, so a 201-char note never becomes pydantic's
+    generic validation list.
+    """
+
+    note: str | None

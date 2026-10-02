@@ -38,6 +38,7 @@ router = APIRouter(prefix="/requests")
 REQUESTS_TABLE = "walk_requests"
 DOGS_TABLE = "dogs"
 PROFILES_TABLE = "walker_profiles"
+CHECKOUTS_TABLE = "checkouts"
 
 NOT_FOUND_MESSAGE = "Request not found."
 DOG_NOT_FOUND_MESSAGE = "Dog not found."
@@ -51,6 +52,7 @@ FLOOD_MESSAGE = "Too many pending requests."
 ACCEPT_STATE_MESSAGE = "Only a pending request can be accepted."
 DECLINE_STATE_MESSAGE = "Only a pending request can be declined."
 CANCEL_STATE_MESSAGE = "Only a pending or accepted request can be cancelled."
+COMPLETED_CANCEL_MESSAGE = "A completed request cannot be cancelled."
 
 #: A walk occupies [requested_time, requested_time + WALK_MINUTES), half-open,
 #: so back-to-back walks never conflict.
@@ -532,6 +534,11 @@ def cancel_request(
 ) -> dict[str, Any]:
     """Cancel a request (its owner only) while it is pending or accepted.
 
+    S3: a request whose checkout was SENT is COMPLETE — the walk happened
+    and the owner already has the photos, so cancelling it is a 400 (a
+    checkout still in DRAFT does not complete the request: the walker has
+    published nothing yet).
+
     ``responded_at`` is untouched: it stays null for a request cancelled
     before any walker response, and keeps the walker's timestamp for one
     cancelled after being accepted.
@@ -545,8 +552,8 @@ def cancel_request(
         ``{id, status: "cancelled"}``.
 
     Raises:
-        HTTPException: 400 (declined/already cancelled), 404 (foreign —
-            including the walker's), 500.
+        HTTPException: 400 (declined/already cancelled, or completed with a
+            sent checkout), 404 (foreign — including the walker's), 500.
     """
     row = first_row(
         run_query(
@@ -560,6 +567,18 @@ def cancel_request(
     if row["status"] not in ("pending", "accepted"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=CANCEL_STATE_MESSAGE
+        )
+
+    completed = run_query(
+        supabase.table(CHECKOUTS_TABLE)
+        .select("id")
+        .eq("request_id", request_id)
+        .eq("owner_id", user.id)
+        .eq("status", "sent")
+    )
+    if completed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=COMPLETED_CANCEL_MESSAGE
         )
 
     run_query(
