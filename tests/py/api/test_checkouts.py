@@ -569,6 +569,30 @@ class TestAiNoteRerunAndQuota:
             "used": 2, "limit": 60, "resetsAt": "2026-11-01T00:00:00+00:00",
         }
 
+    def test_the_model_sees_the_first_photo_at_creation_and_on_rerun(
+        self, fake_client, fake, vision
+    ):
+        """Pin the byte flow the re-run depends on: the model is shown the
+        FIRST photo (once, at creation), and a re-run reads exactly that
+        object back from storage (``download``, recorded by the fake like
+        every storage call) and shows the model the same bytes again — the
+        walker's photos never leave the private bucket to reach the AI."""
+        save_profile(fake_client)
+        dog = create_dog(fake_client)
+        rid = accepted_request(fake_client, dog["id"])
+        res = post_checkout(fake_client, rid, [photo(PNG), photo(JPEG, "q.jpg", "image/jpeg")])
+        assert res.status_code == 201
+        cid = res.json()["id"]
+        assert vision.calls == [PNG]
+        assert not [c for c in fake.storage.calls if c[1] == "download"]
+
+        res = fake_client.post(f"/checkouts/{cid}/ai-note", headers=bearer("token-w"))
+        assert res.status_code == 200
+        downloads = [c for c in fake.storage.calls if c[1] == "download"]
+        assert downloads == [(BUCKET, "download", f"walker-w/{cid}/1.png")]
+        assert vision.calls == [PNG, PNG]
+        assert not [c for c in fake.storage.calls if c[1] == "public"]
+
     def test_a_rerun_never_destroys_a_note_the_walker_edited(self, fake_client, vision):
         draft = self.setup_draft(fake_client)
         assert fake_client.patch(

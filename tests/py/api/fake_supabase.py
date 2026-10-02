@@ -139,7 +139,10 @@ class FakeStorageBucket:
     ``create_signed_url(path, expires_in)`` returns the ``SignedUrlResponse``
     dict ``{"signedURL": ..., "signedUrl": ...}`` and raises
     ``StorageApiError(..., "not_found", 404)`` for a missing object;
-    ``remove(paths)`` returns a list of dicts; ``get_public_url`` is recorded
+    ``remove(paths)`` returns a list of dicts; ``download(path)`` returns the
+    stored bytes verbatim and raises the same ``not_found``/404 shape for a
+    missing object (the ai-note re-run reads the first photo back through
+    it); ``get_public_url`` is recorded
     so tests can assert it is NEVER called (the bucket is private). Upload
     calls record the ``file_options`` verbatim (4th element of the call
     tuple) so tests can pin the stored ``content-type`` — which the API must
@@ -166,6 +169,19 @@ class FakeStorageBucket:
             raise StorageApiError("Object not found", "not_found", 404)
         url = f"https://supabase.example/signed/{self.id}/{path}?expires={expires_in}"
         return {"signedURL": url, "signedUrl": url}
+
+    def download(
+        self, path: str, options: Any = None, query_params: Any = None
+    ) -> bytes:
+        # Copied from storage3/_sync/file_api.py: download(path, options=None,
+        # query_params=None) -> bytes (the raw object content). The real client
+        # surfaces a missing object as a StorageApiError from the request layer;
+        # the not_found/404 shape matches create_signed_url above so the API
+        # code can treat "object is gone" the same way for both calls.
+        self._store.calls.append((self.id, "download", path))
+        if (self.id, path) not in self._store.objects:
+            raise StorageApiError("Object not found", "not_found", 404)
+        return self._store.objects[(self.id, path)]
 
     def remove(self, paths: list[str]) -> list[dict[str, Any]]:
         removed: list[dict[str, Any]] = []

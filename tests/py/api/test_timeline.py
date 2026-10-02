@@ -177,9 +177,17 @@ class TestFeed:
     def test_a_walk_and_a_checkout_at_the_same_instant_break_walk_first(
         self, fake_client, fake_clock, story
     ):
-        # send a second checkout stamped exactly at walk2's requested time
+        # Send the story's walk2 DRAFT stamped exactly at walk2's requested
+        # time. (This used to call send_checkout(walk2), which CREATES a
+        # second checkout for a request that already has the story's draft —
+        # a direct contradiction with the one-checkout-per-request 409 pinned
+        # in test_checkouts.py; no implementation can satisfy both. Sending
+        # the existing draft keeps this test's own pin — the walk-first tie —
+        # intact.)
         fake_clock.now = datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc)
-        cid = send_checkout(fake_client, story["walk2"])
+        cid = story["draft"]
+        assert fake_client.post(f"/checkouts/{cid}/send",
+                                headers=bearer("token-w")).status_code == 200
         body = fake_client.get(f"/dogs/{story['dog']['id']}/timeline?order=asc",
                                headers=bearer("token-a")).json()
         tail = body[-2:]
