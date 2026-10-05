@@ -1,7 +1,7 @@
 """Fakes for the two AI collaborators the API receives through dependencies."""
 
-from cantrack_api.ai.embeddings import ImageError
-from cantrack_api.ai.vision import PhotoCheck
+from cantrack_ai.embeddings import ImageError
+from cantrack_ai.vision import PhotoCheck
 
 # Three well separated 4-d "CLIP" vectors. Real ones have 512 dims; the maths is the same.
 E_REX = [1.0, 0.0, 0.0, 0.0]

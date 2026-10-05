@@ -10,7 +10,7 @@ import uuid
 import pytest
 from postgrest.exceptions import APIError
 
-from cantrack_api.ai.vision import PhotoCheck
+from cantrack_ai.vision import PhotoCheck
 
 from .conftest import bearer
 from .fake_ai import E_LUNA, E_REX

@@ -44,7 +44,7 @@ from storage3.exceptions import StorageApiError
 from supabase import Client
 from supabase_auth.types import User
 
-from ..ai.vision import OllamaVision
+from cantrack_ai.vision import OllamaVision
 from ..db import first_row, run_query
 from ..deps import get_current_user, get_now, get_supabase, get_vision
 from ..schemas import UpdateCheckoutNoteBody

@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from supabase import Client
 from supabase_auth.types import User
 
-from ..ai.embeddings import ClipEmbedder
+from cantrack_ai.embeddings import ClipEmbedder
 from ..db import first_row, run_query
 from ..deps import get_current_user, get_embedder, get_supabase
 from ..schemas import CreateDogBody, DogProfileBody, UpdateDogBody

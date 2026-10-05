@@ -15,8 +15,8 @@ from supabase import Client, create_client
 from supabase_auth.errors import AuthError
 from supabase_auth.types import User
 
-from .ai.embeddings import ClipEmbedder
-from .ai.vision import OllamaVision
+from cantrack_ai.embeddings import ClipEmbedder
+from cantrack_ai.vision import OllamaVision
 
 BEARER = "bearer"
 

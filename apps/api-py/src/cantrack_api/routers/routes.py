@@ -20,8 +20,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFil
 from supabase import Client
 from supabase_auth.types import User
 
-from ..ai.embeddings import ClipEmbedder, cosine_similarity, parse_embedding
-from ..ai.vision import OllamaVision
+from cantrack_ai.embeddings import ClipEmbedder, cosine_similarity, parse_embedding
+from cantrack_ai.vision import OllamaVision
 from ..db import first_row, run_query
 from ..deps import get_current_user, get_embedder, get_supabase, get_vision
 from ..schemas import (

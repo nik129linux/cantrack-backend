@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "CanTrack backend: FastAPI on top of Supabase (Postgres + Auth)."
 requires-python = ">=3.12"
 dependencies = [
+    "cantrack-ai",
     "fastapi>=0.142.2",
     "httpx>=0.28.1",
     "numpy>=2.5.3",
@@ -29,3 +30,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cantrack_api"]
+
+[tool.uv.sources]
+cantrack-ai = { git = "https://github.com/nik129linux/cantrack-ai.git" }

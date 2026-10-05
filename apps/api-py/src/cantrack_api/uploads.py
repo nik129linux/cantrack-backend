@@ -16,7 +16,7 @@ from collections.abc import Sequence
 
 from fastapi import HTTPException, UploadFile, status
 
-from .ai.embeddings import ClipEmbedder, ImageError
+from cantrack_ai.embeddings import ClipEmbedder, ImageError
 
 #: Largest photo accepted, in bytes. A few reference shots of one dog never come
 #: close to this; anything bigger is a mistake or an attempt to exhaust the box.
