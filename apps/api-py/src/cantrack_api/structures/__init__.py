@@ -9,12 +9,14 @@ from .singly_list import SinglyLinkedList
 from .stack import Stack
 from .union_find import UnionFind
 from .weighted_graph import ShortestPath, WeightedGraph
+from .max_heap import MaxHeap
 
 __all__ = [
     "AvlTree",
     "CircularList",
     "DoublyLinkedList",
     "IntervalTree",
+    "MaxHeap",
     "Queue",
     "ShortestPath",
     "SinglyLinkedList",
