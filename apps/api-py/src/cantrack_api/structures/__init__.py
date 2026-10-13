@@ -12,6 +12,7 @@ from .weighted_graph import ShortestPath, WeightedGraph
 from .max_heap import MaxHeap
 from .walk_state_machine import IllegalTransition, WalkEvent, WalkState, WalkStateMachine
 from .rating_window import RatingWindow
+from .token_bucket import TokenBucket
 
 __all__ = [
     "AvlTree",
@@ -25,6 +26,7 @@ __all__ = [
     "ShortestPath",
     "SinglyLinkedList",
     "Stack",
+    "TokenBucket",
     "UnionFind",
     "WalkEvent",
     "WalkState",
