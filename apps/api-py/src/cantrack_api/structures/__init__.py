@@ -11,6 +11,7 @@ from .union_find import UnionFind
 from .weighted_graph import ShortestPath, WeightedGraph
 from .max_heap import MaxHeap
 from .walk_state_machine import IllegalTransition, WalkEvent, WalkState, WalkStateMachine
+from .rating_window import RatingWindow
 
 __all__ = [
     "AvlTree",
@@ -20,6 +21,7 @@ __all__ = [
     "IntervalTree",
     "MaxHeap",
     "Queue",
+    "RatingWindow",
     "ShortestPath",
     "SinglyLinkedList",
     "Stack",
