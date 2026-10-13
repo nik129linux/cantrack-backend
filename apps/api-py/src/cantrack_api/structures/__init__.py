@@ -13,6 +13,7 @@ from .max_heap import MaxHeap
 from .walk_state_machine import IllegalTransition, WalkEvent, WalkState, WalkStateMachine
 from .rating_window import RatingWindow
 from .token_bucket import TokenBucket
+from .quadtree import Quadtree
 
 __all__ = [
     "AvlTree",
@@ -21,6 +22,7 @@ __all__ = [
     "IllegalTransition",
     "IntervalTree",
     "MaxHeap",
+    "Quadtree",
     "Queue",
     "RatingWindow",
     "ShortestPath",
