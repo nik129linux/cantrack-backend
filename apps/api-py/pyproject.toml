@@ -13,15 +13,17 @@ dependencies = [
     "pydantic[email]>=2.13.5",
     "python-dotenv>=1.2.3",
     "python-multipart>=0.0.32",
+    "slowapi>=0.1.10",
     "supabase>=2.31.0",
     "uvicorn[standard]>=0.54.0",
 ]
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.169",
+    "pip-audit>=2.7.0",
     "pytest>=8",
     "schemathesis>=3.38,<4",
-    "slowapi>=0.1.10",
 ]
 
 [tool.pytest.ini_options]
