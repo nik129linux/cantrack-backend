@@ -142,6 +142,33 @@ def create_app() -> FastAPI:
     application.include_router(plans.router)
     application.include_router(checkouts.router)
 
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    _DEFAULT_DETAILS = {404: "Not Found", 405: "Method Not Allowed"}
+    _FRIENDLY_DETAILS = {
+        404: "We couldn't find what you're looking for.",
+        405: "That action isn't allowed here.",
+    }
+
+    @application.exception_handler(StarletteHTTPException)
+    async def _on_http_exception(
+        _request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        """Replace default framework error details with friendly ones.
+
+        Router-level HTTPExceptions that carry a specific detail are left untouched;
+        only the framework defaults for 404 and 405 are replaced.
+        """
+        if exc.status_code in _DEFAULT_DETAILS and exc.detail == _DEFAULT_DETAILS[exc.status_code]:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": _FRIENDLY_DETAILS[exc.status_code]},
+            )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
+
     @application.get("/_whoami")
     def _whoami(user: User = Depends(get_current_user)) -> dict[str, str]:
         """Return the identity the request's bearer token resolved to.
