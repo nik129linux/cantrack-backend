@@ -138,31 +138,49 @@ class TestBiddingRequestNegatives:
         assert res.headers["X-Frame-Options"] == "DENY"
 
 
+# The /dogs/{dog_id} routes type dog_id as uuid.UUID, so a non-UUID path 400s before
+# the body runs. These tests use real UUIDs so the upload/ownership logic is reached.
+DOG_ID = "11111111-1111-1111-1111-111111111111"
+
+
 class TestUploadLimits:
     def test_oversized_image_is_413(self, fake_client, fake):
+        # Starlette's UploadFile.content_type is read-only, set via the part headers.
+        from starlette.datastructures import Headers
+
         from cantrack_api.uploads import read_image
-        big = UploadFile(filename="big.jpg", file=io.BytesIO(b"x" * (MAX_IMAGE_BYTES + 1)))
-        big.content_type = "image/jpeg"
+        big = UploadFile(
+            filename="big.jpg",
+            file=io.BytesIO(b"x" * (MAX_IMAGE_BYTES + 1)),
+            headers=Headers({"content-type": "image/jpeg"}),
+        )
         with pytest.raises(Exception) as exc:
             read_image(big)
         assert getattr(exc.value, "status_code", None) == 413
 
     def test_unsupported_type_is_400(self, fake_client, fake):
+        from starlette.datastructures import Headers
+
         from cantrack_api.uploads import read_image
-        bad = UploadFile(filename="bad.pdf", file=io.BytesIO(b"%PDF"))
-        bad.content_type = "application/pdf"
+        bad = UploadFile(
+            filename="bad.pdf",
+            file=io.BytesIO(b"%PDF"),
+            headers=Headers({"content-type": "application/pdf"}),
+        )
         with pytest.raises(Exception) as exc:
             read_image(bad)
         assert getattr(exc.value, "status_code", None) == 400
 
     def test_too_many_photos_is_400(self, fake_client, fake):
-        fake.seed("dogs", id="dog-1", owner_id="owner-a", name="Firulais")
+        fake.seed("dogs", id=DOG_ID, owner_id="owner-a", name="Firulais")
         files = [("image", ("a.jpg", b"\xff\xd8\xff", "image/jpeg"))] * (MAX_REFERENCE_PHOTOS + 1)
-        res = fake_client.post(f"/dogs/dog-1/photos", files=files, headers=bearer("token-a"))
+        res = fake_client.post(f"/dogs/{DOG_ID}/photos", files=files, headers=bearer("token-a"))
         assert res.status_code == 400
 
     def test_foreign_dog_photo_is_404(self, fake_client, fake):
-        fake.seed("dogs", id="dog-1", owner_id="owner-b", name="Firulais")
+        # The dog belongs to owner-b; owner-a (token-a) must not learn it exists:
+        # the caller-scoped query returns "Dog not found." (404), the same as a missing dog.
+        fake.seed("dogs", id=DOG_ID, owner_id="owner-b", name="Firulais")
         files = [("image", ("a.jpg", b"\xff\xd8\xff", "image/jpeg"))]
-        res = fake_client.post(f"/dogs/dog-1/photos", files=files, headers=bearer("token-a"))
+        res = fake_client.post(f"/dogs/{DOG_ID}/photos", files=files, headers=bearer("token-a"))
         assert res.status_code == 404
