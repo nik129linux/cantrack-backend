@@ -9,12 +9,17 @@ window or — busy — the new dog is pack-compatible with the active route, the
 detour through the street graph is within the limit and the walker's capacity
 allows one more dog. Eligibility math lives in ``bidding_eligibility``; this
 router only loads rows and keeps them or drops them.
+
+Once a walk is ``done`` its recorded trace can be scrubbed read-only: the
+``walk_timeline`` rows are replayed forward or backward and the walk's GPS
+trace answers with the fix recorded at a moment (binary search) or the last
+one recorded. No endpoint writes to the trace.
 """
 
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from supabase import Client
 from supabase_auth.types import User
 
@@ -35,6 +40,14 @@ from ..bidding_eligibility import (
 from ..db import first_row, run_query
 from ..deps import get_current_user, get_now, get_supabase
 from ..geo import haversine_km
+from ..replay import (
+    BACKWARD,
+    FORWARD,
+    GpsPoint,
+    build_timeline,
+    find_gps_at,
+    read_timeline,
+)
 from ..schemas import CreateBiddingRequestBody, PickOfferBody, RatingBody, SendOfferBody
 from ..structures import (
     AvlTree,
@@ -63,6 +76,7 @@ OFFERS_TABLE = "walk_offers"
 RATINGS_TABLE = "walk_ratings"
 BUCKETS_TABLE = "walker_cancel_buckets"
 TIMELINE_TABLE = "walk_timeline"
+GPS_POINTS_TABLE = "walk_gps_points"
 
 NOT_FOUND_MESSAGE = "Request not found."
 DOG_NOT_FOUND_MESSAGE = "Dog not found."
@@ -85,6 +99,11 @@ NO_TOKENS_MESSAGE = "No cancellation tokens left."
 NO_SHOW_TOO_EARLY_MESSAGE = "Too early to mark a no-show."
 WALK_NOT_DONE_MESSAGE = "Only a finished walk can be rated."
 WALK_ALREADY_RATED_MESSAGE = "Walk already rated."
+WALK_NOT_FINISHED_MESSAGE = "Only a finished walk can be replayed."
+REPLAY_DIRECTION_MESSAGE = "direction must be 'forward' or 'backward'."
+REPLAY_STEPS_MESSAGE = "steps must be at least 1."
+REPLAY_RANGE_MESSAGE = "start must be an index of the walk's timeline."
+REPLAY_BEFORE_FIRST_MESSAGE = "atEpoch is before the first recorded GPS point."
 
 #: The statuses whose windows keep a walker busy.
 BUSY_STATUSES = ["assigned", "in_walk"]
@@ -1319,4 +1338,138 @@ def rate_walk(
         "rating": body.rating,
         "recentRating": recent_rating,
         "allTimeRating": all_time_rating,
+    }
+
+
+def _gps_points(supabase: Client, request_id: str) -> list[GpsPoint]:
+    """Load a walk's GPS fixes as GpsPoints, ordered by ``at_epoch``. O(g log g).
+
+    The order is what :func:`find_gps_at` binary-searches and what makes the
+    last row the newest fix, so it comes from the database's composite index
+    on ``(walk_request_id, at_epoch)`` rather than from a sort here.
+
+    Args:
+        supabase: The Supabase client.
+        request_id: The walk whose GPS trace to load.
+
+    Returns:
+        The fixes of the walk, oldest first; empty when it was recorded
+        without a trace.
+    """
+    point_rows = run_query(
+        supabase.table(GPS_POINTS_TABLE)
+        .select("*")
+        .eq("walk_request_id", request_id)
+        .order("at_epoch")
+    )
+    return [
+        GpsPoint(
+            at_epoch=point_row["at_epoch"],
+            lat=point_row["lat"],
+            lng=point_row["lng"],
+        )
+        for point_row in point_rows
+    ]
+
+
+def _gps_view(gps_point: GpsPoint) -> dict[str, Any]:
+    """One GPS fix as the replay answers it. O(1)."""
+    return {
+        "atEpoch": gps_point.at_epoch,
+        "lat": gps_point.lat,
+        "lng": gps_point.lng,
+    }
+
+
+@router.get("/requests/{request_id}/replay")
+def replay_walk(
+    request_id: str,
+    direction: str = FORWARD,
+    start: int = 0,
+    steps: int = 50,
+    at_epoch: float | None = Query(default=None, alias="atEpoch"),
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+) -> dict[str, Any]:
+    """Scrub through a finished walk forward or backward, with a GPS jump.
+
+    The walk must be ``done`` — anything else is a 409 — and only its owner
+    may read it (a foreign one is a 403). :func:`build_timeline` sorts the
+    walk's ``walk_timeline`` rows and :func:`read_timeline` walks that
+    timeline ``steps`` events from ``start`` in ``direction``; the GPS answer
+    is the fix recorded at ``atEpoch`` (binary search, the earlier one when it
+    falls between two fixes), the last fix recorded when no jump is asked for,
+    and ``null`` for a walk recorded without a GPS trace.
+
+    Args:
+        request_id: The finished walk to replay.
+        direction: ``forward`` (later events) or ``backward`` (earlier ones).
+        start: The index to scrub from, counted in ``direction``.
+        steps: How many events to return.
+        at_epoch: The epoch to jump the GPS answer to, if any.
+        user: The authenticated owner.
+        supabase: The Supabase client.
+
+    Returns:
+        ``{events: [{kind, at}], gps: {atEpoch, lat, lng} | null}``.
+
+    Raises:
+        HTTPException: 400 (not an owner, bad direction, steps below 1,
+            ``start`` outside the timeline, ``atEpoch`` before the first fix),
+            403 (not the owner), 409 (walk not finished), 500 (database).
+
+    Big-O: O(t log t + g log g), where t is the walk's timeline rows and g its
+    GPS points: the timeline is sorted once and the GPS fix is binary-searched.
+    """
+    if _role(user) != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=OWNER_ROLE_MESSAGE
+        )
+    if direction not in (FORWARD, BACKWARD):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=REPLAY_DIRECTION_MESSAGE
+        )
+    if steps < 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=REPLAY_STEPS_MESSAGE
+        )
+
+    walk_request = _owned_request(supabase, request_id, user.id)
+    if walk_request["status"] != "done":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=WALK_NOT_FINISHED_MESSAGE
+        )
+
+    timeline_rows = run_query(
+        supabase.table(TIMELINE_TABLE)
+        .select("*")
+        .eq("walk_request_id", request_id)
+        .order("at")
+    )
+    walk_timeline = build_timeline(timeline_rows)
+    try:
+        events = read_timeline(walk_timeline, start, steps, direction)
+    except IndexError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=REPLAY_RANGE_MESSAGE
+        ) from None
+
+    gps_points = _gps_points(supabase, request_id)
+    current_point: GpsPoint | None
+    if at_epoch is None:
+        current_point = gps_points[-1] if gps_points else None
+    else:
+        try:
+            current_point = find_gps_at(gps_points, at_epoch)
+        except ValueError:
+            current_point = None
+        except IndexError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=REPLAY_BEFORE_FIRST_MESSAGE,
+            ) from None
+
+    return {
+        "events": [{"kind": event.kind, "at": event.at} for event in events],
+        "gps": None if current_point is None else _gps_view(current_point),
     }
