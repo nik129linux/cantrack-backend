@@ -202,3 +202,57 @@ class UpdateCheckoutNoteBody(BaseModel):
     """
 
     note: str | None
+
+
+# --- Bidding (Plan 2, FR-23..FR-27) -------------------------------------
+
+
+class CreateBiddingRequestBody(BaseModel):
+    """Body of ``POST /bidding/requests`` (FR-23).
+
+    The owner is always the caller, and the dog must be one of theirs (the
+    router answers 404 otherwise). ``windowStart`` is an ISO-8601 string the
+    router parses to enforce the timezone offset and the future-time rule, so
+    it stays a plain string here (no min_length on purpose, exactly like
+    ``CreateRequestBody.requestedTime``). The price is the owner's asking
+    price in COP; the bids walkers send later decide who wins.
+    """
+
+    dogId: str = Field(min_length=1)
+    windowStart: str
+    durationHours: float = Field(gt=0, le=12)
+    priceCop: int = Field(ge=0)
+    pickupLat: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    pickupLng: float = Field(ge=-180, le=180, allow_inf_nan=False)
+
+
+class SendOfferBody(BaseModel):
+    """Body of ``POST /bidding/requests/{id}/offers`` (FR-23).
+
+    A walker's bid: the price they ask for the walk and their estimated
+    minutes to reach the pickup. The distance the score also uses comes from
+    the walker's stored position, never from the body.
+    """
+
+    priceCop: int = Field(ge=0)
+    etaMin: float = Field(ge=0)
+
+
+class PickOfferBody(BaseModel):
+    """Body of ``POST /bidding/requests/{id}/pick`` (FR-24).
+
+    The owner picks exactly one offer by id; the compare-and-set on the
+    request status makes a second pick lose with a 409.
+    """
+
+    offerId: str = Field(min_length=1)
+
+
+class RatingBody(BaseModel):
+    """Body of ``POST /bidding/requests/{id}/rating`` (FR-26).
+
+    One walker's verdict on a finished walk, on the 1–5 scale the database
+    constraint also enforces.
+    """
+
+    rating: float = Field(ge=1, le=5)

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from .routers import (
     auth,
+    bidding,
     checkouts,
     clients,
     dogs,
@@ -71,6 +72,7 @@ def create_app() -> FastAPI:
         )
 
     application.include_router(auth.router)
+    application.include_router(bidding.router)
     application.include_router(dogs.router)
     application.include_router(routes.router)
     application.include_router(walker_profiles.router)
