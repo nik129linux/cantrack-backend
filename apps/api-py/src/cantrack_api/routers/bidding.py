@@ -35,7 +35,7 @@ from ..bidding_eligibility import (
 from ..db import first_row, run_query
 from ..deps import get_current_user, get_now, get_supabase
 from ..geo import haversine_km
-from ..schemas import CreateBiddingRequestBody, PickOfferBody, SendOfferBody
+from ..schemas import CreateBiddingRequestBody, PickOfferBody, RatingBody, SendOfferBody
 from ..structures import (
     AvlTree,
     IllegalTransition,
@@ -83,6 +83,8 @@ OFFER_NOT_FOUND_MESSAGE = "Offer not found."
 TRANSITION_MESSAGE = "That transition is not allowed from the current state."
 NO_TOKENS_MESSAGE = "No cancellation tokens left."
 NO_SHOW_TOO_EARLY_MESSAGE = "Too early to mark a no-show."
+WALK_NOT_DONE_MESSAGE = "Only a finished walk can be rated."
+WALK_ALREADY_RATED_MESSAGE = "Walk already rated."
 
 #: The statuses whose windows keep a walker busy.
 BUSY_STATUSES = ["assigned", "in_walk"]
@@ -1244,3 +1246,77 @@ def check_out_walk(
         "check_out",
         now,
     )
+
+
+@router.post("/requests/{request_id}/ratings", status_code=status.HTTP_201_CREATED)
+def rate_walk(
+    request_id: str,
+    body: RatingBody,
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+    now: datetime = Depends(get_now),
+) -> dict[str, Any]:
+    """Rate a finished walk (the owning owner only).
+
+    Only a ``done`` walk can be rated — anything else is a 409 — and each walk
+    carries at most one rating, so a second attempt is a 409. The 1–5 range
+    is enforced by the pydantic body (400). The rating is one
+    ``walk_ratings`` row; the answer rebuilds the walker's reputation from the
+    stored rows: ``recentRating`` is the ``RatingWindow(25)`` average over the
+    newest 25 ratings and ``allTimeRating`` the mean over every rating.
+
+    Args:
+        request_id: The walk request to rate.
+        body: The owner's verdict on the walk.
+        user: The authenticated owner.
+        supabase: The Supabase client.
+        now: The current time (dependency, frozen in tests).
+
+    Returns:
+        ``{id, rating, recentRating, allTimeRating}`` — the stored rating and
+        the walker's rebuilt reputation.
+
+    Raises:
+        HTTPException: 400 (not an owner, rating out of range), 403 (not the
+            owner), 409 (walk not finished, already rated), 500 (database).
+    """
+    if _role(user) != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=OWNER_ROLE_MESSAGE
+        )
+
+    walk_request = _owned_request(supabase, request_id, user.id)
+    if walk_request["status"] != "done":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=WALK_NOT_DONE_MESSAGE
+        )
+
+    existing_ratings = run_query(
+        supabase.table(RATINGS_TABLE).select("*").eq("walk_request_id", request_id)
+    )
+    if existing_ratings:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=WALK_ALREADY_RATED_MESSAGE
+        )
+
+    rows = run_query(
+        supabase.table(RATINGS_TABLE).insert(
+            {
+                "walk_request_id": request_id,
+                "walker_id": walk_request["walker_id"],
+                "rating": body.rating,
+                "created_at": now.isoformat(),
+            }
+        )
+    )
+    created = first_row(rows, NOT_FOUND_MESSAGE)
+
+    recent_rating, all_time_rating = _offer_ratings(
+        supabase, walk_request["walker_id"]
+    )
+    return {
+        "id": created["id"],
+        "rating": body.rating,
+        "recentRating": recent_rating,
+        "allTimeRating": all_time_rating,
+    }
