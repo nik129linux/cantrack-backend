@@ -37,10 +37,12 @@ from ..deps import get_current_user, get_now, get_supabase
 from ..geo import haversine_km
 from ..schemas import CreateBiddingRequestBody, PickOfferBody, SendOfferBody
 from ..structures import (
+    AvlTree,
     IllegalTransition,
     IntervalTree,
     Quadtree,
     RatingWindow,
+    SinglyLinkedList,
     TokenBucket,
     UnionFind,
     WalkEvent,
@@ -636,6 +638,80 @@ def list_offers(
     return ranked_offers
 
 
+def _join_active_route(
+    supabase: Client, winner_id: str, walk_request: dict[str, Any]
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Append the picked dog to the winning walker's active route. O(a + s log s).
+
+    The winner's busy walks (``assigned``/``in_walk``) are scanned in window
+    order; the first one with stored stops owns the route. Its stops are loaded
+    into a SinglyLinkedList, the new dog's stop is appended and persisted as a
+    ``walk_route_stops`` row on that walk (``position`` = max + 1), and every
+    stop's ``pickup_time`` is re-indexed into an AvlTree whose ``min()`` is
+    the next pickup. A winner with no busy route gets an empty stop list and
+    no next pickup.
+
+    Args:
+        supabase: The Supabase client.
+        winner_id: The walker who won the pick.
+        walk_request: The walk request that was just assigned.
+
+    Returns:
+        ``(route_stops, next_pickup)`` — the route in order, each stop
+        ``{dogId, stopKey, pickupTime, position}``, and the next pickup
+        ``{pickupTime, stopKey, dogId}``; ``next_pickup`` is None when the
+        winner has no active route.
+    """
+    active_rows = run_query(
+        supabase.table(REQUESTS_TABLE)
+        .select("*")
+        .eq("walker_id", winner_id)
+        .in_("status", BUSY_STATUSES)
+        .order("requested_time")
+    )
+    for active_row in active_rows:
+        stop_rows = run_query(
+            supabase.table(ROUTE_STOPS_TABLE)
+            .select("*")
+            .eq("walk_request_id", active_row["id"])
+            .order("position")
+        )
+        if not stop_rows:
+            continue
+        route: SinglyLinkedList[dict[str, Any]] = SinglyLinkedList()
+        for stop_row in stop_rows:
+            route.append(stop_row)
+        new_stop = {
+            "walk_request_id": active_row["id"],
+            "dog_id": walk_request["dog_id"],
+            "stop_key": _pickup_stop(walk_request["id"]),
+            "pickup_time": walk_request["requested_time"],
+            "position": max(stop_row["position"] for stop_row in stop_rows) + 1,
+        }
+        route.append(new_stop)
+        run_query(supabase.table(ROUTE_STOPS_TABLE).insert(new_stop))
+        pickup_index: AvlTree[str, dict[str, Any]] = AvlTree()
+        for stop in route.to_array():
+            pickup_index.insert(stop["pickup_time"], stop)
+        _, next_stop = pickup_index.min()
+        route_stops = [
+            {
+                "dogId": stop["dog_id"],
+                "stopKey": stop["stop_key"],
+                "pickupTime": stop["pickup_time"],
+                "position": stop["position"],
+            }
+            for stop in route.to_array()
+        ]
+        next_pickup = {
+            "pickupTime": next_stop["pickup_time"],
+            "stopKey": next_stop["stop_key"],
+            "dogId": next_stop["dog_id"],
+        }
+        return route_stops, next_pickup
+    return [], None
+
+
 @router.post("/requests/{request_id}/pick")
 def pick_offer(
     request_id: str,
@@ -659,7 +735,13 @@ def pick_offer(
         supabase: The Supabase client.
 
     Returns:
-        ``{id, status: "assigned", walkerId}``.
+        ``{id, status: "assigned", walkerId, routeStops}`` — ``routeStops`` is
+        the winning walker's active route after the pick, each stop
+        ``{dogId, stopKey, pickupTime, position}``; a busy winner's new dog is
+        appended to the route and ``nextPickup`` (``{pickupTime, stopKey,
+        dogId}``, the AvlTree minimum over every stop's pickup time) is
+        included, while a free winner gets ``routeStops: []`` and no
+        ``nextPickup``.
 
     Raises:
         HTTPException: 400 (not an owner), 403 (not the owner), 404 (unknown
@@ -695,7 +777,18 @@ def pick_offer(
             status_code=status.HTTP_409_CONFLICT, detail=WALK_NO_LONGER_OPEN_MESSAGE
         )
     won = updated[0]
-    return {"id": won["id"], "status": won["status"], "walkerId": won["walker_id"]}
+    route_stops, next_pickup = _join_active_route(
+        supabase, won["walker_id"], walk_request
+    )
+    resolved: dict[str, Any] = {
+        "id": won["id"],
+        "status": won["status"],
+        "walkerId": won["walker_id"],
+        "routeStops": route_stops,
+    }
+    if next_pickup is not None:
+        resolved["nextPickup"] = next_pickup
+    return resolved
 
 
 @router.post("/requests/{request_id}/auto-pick")
