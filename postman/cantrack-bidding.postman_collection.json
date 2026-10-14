@@ -1,0 +1,680 @@
+{
+  "info": {
+    "name": "CanTrack \u2014 Walk Bidding (FR-23..FR-27)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Walk-bidding API: post a request, bid, pick one winner, lifecycle, replay. Happy path runs top to bottom (it stores walkId/offerId as it goes); the NEG requests assert the failure cases. Fill the environment tokens first."
+  },
+  "item": [
+    {
+      "name": "Post walk request (owner)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{ownerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"dogId\": \"{{dogId}}\",\n  \"windowStart\": \"2030-01-01T10:00:00+00:00\",\n  \"durationHours\": 1.0,\n  \"priceCop\": 30000,\n  \"pickupLat\": 6.2,\n  \"pickupLng\": -75.5\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"201 Created\", function () {",
+              "    pm.response.to.have.status(201);",
+              "});",
+              "pm.test(\"status is open\", function () {",
+              "    pm.expect(pm.response.json().status).to.eql(\"open\");",
+              "    pm.environment.set(\"walkId\", pm.response.json().id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "List open requests (walker)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{walkerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/open",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "open"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"200 OK\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Send offer (walker)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{walkerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/offers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "offers"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"priceCop\": 28000,\n  \"etaMin\": 10.0\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"201 Created\", function () {",
+              "    pm.response.to.have.status(201);",
+              "});",
+              "pm.test(\"store offerId\", function () {",
+              "    pm.environment.set(\"offerId\", pm.response.json().offerId || pm.response.json().id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Send offer (second walker)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{walker2Token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/offers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "offers"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"priceCop\": 20000,\n  \"etaMin\": 8.0\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"201 Created\", function () {",
+              "    pm.response.to.have.status(201);",
+              "});",
+              "pm.test(\"store offer2Id\", function () {",
+              "    pm.environment.set(\"offer2Id\", pm.response.json().offerId || pm.response.json().id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "List ranked offers (owner)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{ownerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/offers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "offers"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"200 OK\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test(\"ranked best-first by score\", function () {",
+              "    var offers = pm.response.json();",
+              "    pm.expect(offers.length).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Pick offer (owner) \u2014 wins",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{ownerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/pick",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "pick"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"offerId\": \"{{offerId}}\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"200 OK\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test(\"assigned\", function () {",
+              "    pm.expect(pm.response.json().status).to.eql(\"assigned\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Check in (walker)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{walkerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/check-in",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "check-in"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"200 OK\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test(\"in_walk\", function () { pm.expect(pm.response.json().status).to.eql(\"in_walk\"); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Check out (walker)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{walkerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/check-out",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "check-out"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"200 OK\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test(\"done\", function () { pm.expect(pm.response.json().status).to.eql(\"done\"); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Rate the walk (owner)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{ownerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/ratings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "ratings"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"rating\": 5.0\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"201 Created\", function () {",
+              "    pm.response.to.have.status(201);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Replay the finished walk (owner)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{ownerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/replay?direction=forward&start=0&steps=50",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "replay?direction=forward&start=0&steps=50"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"200 OK\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test(\"events present\", function () {",
+              "    pm.expect(pm.response.json()).to.have.property(\"events\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "NEG second pick \u2192 409",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{ownerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/pick",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "pick"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"offerId\": \"{{offer2Id}}\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"409 Walk no longer open\", function () {",
+              "    pm.response.to.have.status(409);",
+              "    pm.expect(pm.response.json().detail).to.eql(\"Walk no longer open.\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "NEG check-out from assigned \u2192 409",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{walkerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/check-out",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "check-out"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"409 Conflict (illegal transition)\", function () {",
+              "    pm.response.to.have.status(409);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "NEG wrong owner pick \u2192 403",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{walker2Token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/pick",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "pick"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"offerId\": \"{{offerId}}\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"403 Forbidden\", function () {",
+              "    pm.response.to.have.status(403);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "NEG second offer same walker \u2192 409",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{walkerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/offers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "offers"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"priceCop\": 27000,\n  \"etaMin\": 9.0\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"409 Conflict (already offered)\", function () {",
+              "    pm.response.to.have.status(409);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "NEG rating above 5 \u2192 422",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{ownerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/ratings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "ratings"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"rating\": 9.0\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"422 Unprocessable (rating out of range)\", function () {",
+              "    pm.response.to.have.status(422);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
