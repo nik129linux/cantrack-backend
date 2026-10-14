@@ -3,10 +3,11 @@
 import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from supabase import Client
 from supabase_auth.errors import AuthError
 
+from ..app import limiter
 from ..deps import get_auth_client
 from ..schemas import LoginBody, ResetPasswordBody, SignupBody
 
@@ -18,7 +19,9 @@ INVALID_CREDENTIALS_MESSAGE = "Invalid login credentials."
 
 
 @router.post("/signup", status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
 def signup(
+    request: Request,
     body: SignupBody,
     supabase: Client = Depends(get_auth_client),
 ) -> dict[str, Any]:
@@ -47,6 +50,10 @@ def signup(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message
         ) from exc
+    except AttributeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc) or "Invalid signup request."
+        ) from exc
 
     user = result.user
     session = result.session
@@ -57,7 +64,9 @@ def signup(
 
 
 @router.post("/login")
+@limiter.limit("5/minute")
 def login(
+    request: Request,
     body: LoginBody,
     supabase: Client = Depends(get_auth_client),
 ) -> dict[str, Any]:
@@ -82,6 +91,11 @@ def login(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail=exc.message
         ) from exc
+    except AttributeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=INVALID_CREDENTIALS_MESSAGE,
+        ) from exc
 
     session = result.session
     if session is None:
@@ -94,7 +108,9 @@ def login(
 
 
 @router.post("/reset-password")
+@limiter.limit("5/minute")
 def reset_password(
+    request: Request,
     body: ResetPasswordBody,
     supabase: Client = Depends(get_auth_client),
 ) -> dict[str, str]:
@@ -124,6 +140,10 @@ def reset_password(
     except AuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message
+        ) from exc
+    except AttributeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc) or "Reset failed."
         ) from exc
 
     return {"message": RESET_SENT_MESSAGE}

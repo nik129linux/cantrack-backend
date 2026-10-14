@@ -19,9 +19,11 @@ one recorded. No endpoint writes to the trace.
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from supabase import Client
 from supabase_auth.types import User
+
+from ..app import limiter
 
 from ..bidding import (
     DEFAULT_CONFIG,
@@ -155,7 +157,9 @@ def _open_view(row: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/requests", status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 def create_bidding_request(
+    request: Request,
     body: CreateBiddingRequestBody,
     user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase),
@@ -457,7 +461,9 @@ def _offer_ratings(
 
 
 @router.post("/requests/{request_id}/offers", status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 def send_offer(
+    request: Request,
     request_id: str,
     body: SendOfferBody,
     user: User = Depends(get_current_user),

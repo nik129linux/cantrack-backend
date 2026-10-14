@@ -9,22 +9,15 @@ from fastapi import Depends, FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 from supabase_auth.types import User
 
 from .deps import get_current_user
-from .routers import (
-    auth,
-    bidding,
-    checkouts,
-    clients,
-    dogs,
-    plans,
-    requests,
-    routes,
-    walker_profiles,
-)
 
 DEFAULT_WEB_ORIGIN = "http://localhost:5173"
 
@@ -37,6 +30,9 @@ SECURITY_HEADERS: dict[str, str] = {
     "Referrer-Policy": "no-referrer",
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
 }
+
+#: In-memory limiter for floodable endpoints. O(1) per request.
+limiter = Limiter(key_func=get_remote_address, default_limits=[])
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -90,16 +86,21 @@ def create_app() -> FastAPI:
     """
     application = FastAPI(title="CanTrack API")
 
+    application.state.limiter = limiter
+    application.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
     # CORS is added first, as before; Starlette wraps middleware in reverse
     # order of insertion, so the security headers end up on the outside and
     # therefore cover the CORS responses and the error responses (401/400/500)
-    # that the exception handlers below produce.
+    # that the exception handlers below produce. SlowAPIMiddleware sits between
+    # them: CORS innermost, SlowAPI middle, security headers outermost.
     application.add_middleware(
         CORSMiddleware,
         allow_origins=_web_origins(),
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    application.add_middleware(SlowAPIMiddleware)
     application.add_middleware(SecurityHeadersMiddleware)
 
     @application.exception_handler(RequestValidationError)
@@ -116,6 +117,20 @@ def create_app() -> FastAPI:
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"detail": json.loads(json.dumps(exc.errors(), default=str))},
         )
+
+    # Routers are imported lazily to avoid a circular import with
+    # ``cantrack_api.app.limiter`` which the auth/bidding routers decorate.
+    from .routers import (
+        auth,
+        bidding,
+        checkouts,
+        clients,
+        dogs,
+        plans,
+        requests,
+        routes,
+        walker_profiles,
+    )
 
     application.include_router(auth.router)
     application.include_router(bidding.router)
