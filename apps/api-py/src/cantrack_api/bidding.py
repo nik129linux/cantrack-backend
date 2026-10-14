@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .structures import TokenBucket
+
 
 @dataclass(frozen=True)
 class BiddingConfig:
@@ -35,6 +37,9 @@ class BiddingConfig:
 
 
 DEFAULT_CONFIG: BiddingConfig = BiddingConfig()
+
+#: Length of the cancel-token refill period in seconds (one week). O(1).
+WEEK_SECONDS = 7 * 24 * 3600.0
 
 
 @dataclass(frozen=True)
@@ -137,3 +142,39 @@ def rank_offers(walk_offers: list[WalkOffer], config: BiddingConfig = DEFAULT_CO
         key=lambda offer: (-scores[offer.offer_id], offer.created_at),
     )
     return [offer.offer_id for offer in ordered_offers]
+
+
+def spend_cancel_token(
+    cancel_bucket: TokenBucket,
+    remaining: int,
+    period_start: float,
+    now: float,
+) -> tuple[bool, int]:
+    """Spend one cancel token for a walker, replaying the stored bucket state.
+
+    ``cancel_bucket`` is built with the weekly refill period and
+    ``period_start``; ``remaining`` is the walker's stored token count. The
+    stored state is replayed as ``capacity - remaining`` takes at
+    ``period_start`` so the bucket's internal counter matches the database
+    row, then one take is attempted at ``now`` — crossing a weekly boundary
+    between the two moments refills the bucket first.
+
+    Args:
+        cancel_bucket: The walker's bucket (capacity, refill period, start).
+        remaining: The stored token count to replay.
+        period_start: Epoch seconds the stored period started at.
+        now: Epoch seconds the spend is attempted at.
+
+    Returns:
+        ``(spent, new_remaining)`` — whether the token was spent and the
+        resulting token count.
+
+    Big-O: O(1) — the replay loop runs ``capacity - remaining`` times and the
+        capacity is the fixed ``cancel_tokens_per_week`` constant.
+    """
+
+    capacity = cancel_bucket.available(period_start)
+    for _ in range(capacity - remaining):
+        cancel_bucket.take(period_start)
+    spent = cancel_bucket.take(now)
+    return spent, cancel_bucket.available(now)

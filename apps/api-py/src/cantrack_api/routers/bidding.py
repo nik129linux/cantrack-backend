@@ -18,7 +18,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
 from supabase_auth.types import User
 
-from ..bidding import DEFAULT_CONFIG, WalkOffer, rank_offers, score_offers
+from ..bidding import (
+    DEFAULT_CONFIG,
+    WEEK_SECONDS,
+    WalkOffer,
+    rank_offers,
+    score_offers,
+    spend_cancel_token,
+)
 from ..bidding_eligibility import (
     is_busy_eligible,
     is_free_in_window,
@@ -34,6 +41,7 @@ from ..structures import (
     IntervalTree,
     Quadtree,
     RatingWindow,
+    TokenBucket,
     UnionFind,
     WalkEvent,
     WalkState,
@@ -52,6 +60,7 @@ ROUTE_STOPS_TABLE = "walk_route_stops"
 OFFERS_TABLE = "walk_offers"
 RATINGS_TABLE = "walk_ratings"
 BUCKETS_TABLE = "walker_cancel_buckets"
+TIMELINE_TABLE = "walk_timeline"
 
 NOT_FOUND_MESSAGE = "Request not found."
 DOG_NOT_FOUND_MESSAGE = "Dog not found."
@@ -69,6 +78,9 @@ AUTO_PICK_OWNER_MESSAGE = "Only owners can run an auto-pick."
 WALK_NO_LONGER_OPEN_MESSAGE = "Walk no longer open."
 DEADLINE_NOT_PASSED_MESSAGE = "Deadline has not passed yet."
 OFFER_NOT_FOUND_MESSAGE = "Offer not found."
+TRANSITION_MESSAGE = "That transition is not allowed from the current state."
+NO_TOKENS_MESSAGE = "No cancellation tokens left."
+NO_SHOW_TOO_EARLY_MESSAGE = "Too early to mark a no-show."
 
 #: The statuses whose windows keep a walker busy.
 BUSY_STATUSES = ["assigned", "in_walk"]
@@ -784,3 +796,358 @@ def _validate_transition(current_status: str, event: WalkEvent) -> None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=WALK_NO_LONGER_OPEN_MESSAGE
         ) from None
+
+
+def _validate_lifecycle_transition(current_status: str, event: WalkEvent) -> None:
+    """Validate an event for the cancels/check-in/check-out endpoints. O(1).
+
+    Raises:
+        HTTPException: 409 ``That transition is not allowed from the current
+            state.`` when the machine refuses the pair — the IllegalTransition
+            mapping every lifecycle endpoint uses.
+    """
+    try:
+        WalkStateMachine.next_state(WalkState(current_status), event)
+    except IllegalTransition:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=TRANSITION_MESSAGE
+        ) from None
+
+
+def _spend_walker_token(
+    supabase: Client, walker_id: str, now: datetime
+) -> tuple[bool, int]:
+    """Spend one cancel token for a walker and persist the new count. O(1).
+
+    A missing ``walker_cancel_buckets`` row starts the period full at
+    ``cancel_tokens_per_week``; an existing row replays its stored state
+    through :func:`spend_cancel_token` so the weekly refill applies. The row
+    is written only when a token was actually spent.
+
+    Args:
+        supabase: The Supabase client.
+        walker_id: The walker whose bucket to spend from.
+        now: The current time (dependency, frozen in tests).
+
+    Returns:
+        ``(spent, new_remaining)``.
+    """
+    bucket_rows = run_query(
+        supabase.table(BUCKETS_TABLE).select("*").eq("walker_id", walker_id)
+    )
+    if bucket_rows:
+        period_start = datetime.fromisoformat(bucket_rows[0]["period_start"]).timestamp()
+        cancel_bucket = TokenBucket(
+            DEFAULT_CONFIG.cancel_tokens_per_week, WEEK_SECONDS, period_start
+        )
+        spent, new_remaining = spend_cancel_token(
+            cancel_bucket, bucket_rows[0]["remaining"], period_start, now.timestamp()
+        )
+        if spent:
+            run_query(
+                supabase.table(BUCKETS_TABLE)
+                .update({"remaining": new_remaining})
+                .eq("walker_id", walker_id)
+            )
+        return spent, new_remaining
+    period_start = now.timestamp()
+    cancel_bucket = TokenBucket(
+        DEFAULT_CONFIG.cancel_tokens_per_week, WEEK_SECONDS, period_start
+    )
+    spent, new_remaining = spend_cancel_token(
+        cancel_bucket,
+        DEFAULT_CONFIG.cancel_tokens_per_week,
+        period_start,
+        period_start,
+    )
+    run_query(
+        supabase.table(BUCKETS_TABLE).insert(
+            {
+                "walker_id": walker_id,
+                "remaining": new_remaining,
+                "period_start": now.isoformat(),
+            }
+        )
+    )
+    return spent, new_remaining
+
+
+def _assigned_request(supabase: Client, request_id: str, walker_id: str) -> dict[str, Any]:
+    """Load a walk request assigned to ``walker_id``, or 403 for a foreign one. O(1)."""
+    walk_request_rows = run_query(
+        supabase.table(REQUESTS_TABLE)
+        .select("*")
+        .eq("id", request_id)
+        .eq("walker_id", walker_id)
+    )
+    if not walk_request_rows:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=NOT_YOUR_WALK_MESSAGE
+        )
+    return walk_request_rows[0]
+
+
+def _apply_transition(
+    supabase: Client,
+    request_id: str,
+    walk_request: dict[str, Any],
+    event: WalkEvent,
+    patch: dict[str, Any],
+    timeline_kind: str | None,
+    now: datetime,
+) -> dict[str, Any]:
+    """Validate, compare-and-set and append the timeline row for a transition. O(1).
+
+    Args:
+        supabase: The Supabase client.
+        request_id: The walk request to move.
+        walk_request: The stored request row (pre-transition status).
+        event: The WalkStateMachine event to validate and apply.
+        patch: The columns to set on ``walk_requests``.
+        timeline_kind: The ``walk_timeline`` kind to append, or None.
+        now: The current time (dependency, frozen in tests).
+
+    Returns:
+        ``{id, status, walkerId}`` of the updated row.
+
+    Raises:
+        HTTPException: 409 when the machine refuses the event or the
+            compare-and-set matches zero rows.
+    """
+    _validate_lifecycle_transition(walk_request["status"], event)
+    updated = run_query(
+        supabase.table(REQUESTS_TABLE)
+        .update(patch)
+        .eq("id", request_id)
+        .eq("status", walk_request["status"])
+    )
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=TRANSITION_MESSAGE
+        )
+    if timeline_kind is not None:
+        run_query(
+            supabase.table(TIMELINE_TABLE).insert(
+                {
+                    "walk_request_id": request_id,
+                    "kind": timeline_kind,
+                    "at": now.isoformat(),
+                    "payload": {},
+                }
+            )
+        )
+    row = updated[0]
+    return {"id": row["id"], "status": row["status"], "walkerId": row["walker_id"]}
+
+
+@router.post("/requests/{request_id}/walker-cancel")
+def walker_cancel_request(
+    request_id: str,
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+    now: datetime = Depends(get_now),
+) -> dict[str, Any]:
+    """Cancel an assigned walk and reopen it for bidding (the assigned walker).
+
+    Costs one cancel token: a walker with an empty bucket gets a 403 and the
+    walk stays ``assigned``. A spent token applies ``WALKER_CANCEL`` through
+    the WalkStateMachine and a compare-and-set flips the walk back to
+    ``open``; the offers stay in the table so the reopened request keeps its
+    heap.
+
+    Args:
+        request_id: The walk request to cancel.
+        user: The authenticated walker.
+        supabase: The Supabase client.
+        now: The current time (dependency, frozen in tests).
+
+    Returns:
+        ``{id, status: "open", walkerId}``.
+
+    Raises:
+        HTTPException: 403 (not the assigned walker, no tokens left), 409
+            (illegal transition or lost compare-and-set), 500 (database).
+    """
+    walk_request = _assigned_request(supabase, request_id, user.id)
+    _validate_lifecycle_transition(walk_request["status"], WalkEvent.WALKER_CANCEL)
+    spent, _ = _spend_walker_token(supabase, user.id, now)
+    if not spent:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=NO_TOKENS_MESSAGE
+        )
+    return _apply_transition(
+        supabase,
+        request_id,
+        walk_request,
+        WalkEvent.WALKER_CANCEL,
+        {"status": "open"},
+        None,
+        now,
+    )
+
+
+@router.post("/requests/{request_id}/owner-cancel")
+def owner_cancel_request(
+    request_id: str,
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+    now: datetime = Depends(get_now),
+) -> dict[str, Any]:
+    """Cancel a walk the owner posted or won (the owning owner only).
+
+    ``open`` withdraws (``OWNER_WITHDRAW``) and ``assigned`` cancels before
+    pickup (``OWNER_CANCEL``); both end ``cancelled``. Any other state is a
+    409. A foreign request is a 403.
+
+    Args:
+        request_id: The walk request to cancel.
+        user: The authenticated owner.
+        supabase: The Supabase client.
+
+    Returns:
+        ``{id, status: "cancelled", walkerId}``.
+
+    Raises:
+        HTTPException: 403 (not the owner), 409 (illegal transition), 500
+            (database).
+    """
+    walk_request = _owned_request(supabase, request_id, user.id)
+    current_status = walk_request["status"]
+    if current_status == "open":
+        event = WalkEvent.OWNER_WITHDRAW
+    elif current_status == "assigned":
+        event = WalkEvent.OWNER_CANCEL
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=TRANSITION_MESSAGE
+        )
+    return _apply_transition(
+        supabase,
+        request_id,
+        walk_request,
+        event,
+        {"status": "cancelled"},
+        None,
+        now,
+    )
+
+
+@router.post("/requests/{request_id}/no-show")
+def mark_no_show(
+    request_id: str,
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+    now: datetime = Depends(get_now),
+) -> dict[str, Any]:
+    """Mark the assigned walker as a no-show and reopen the walk (owners only).
+
+    Only legal from ``assigned`` and only at/after ``window_start`` plus the
+    no-show grace period — earlier than that is a 400. The no-show counts as a
+    walker cancellation: it spends one token via the same helper as
+    ``walker-cancel``, but an empty bucket still reopens the walk (the
+    penalty applies at ranking time).
+
+    Args:
+        request_id: The walk request whose walker failed to show.
+        user: The authenticated owner.
+        supabase: The Supabase client.
+        now: The current time (dependency, frozen in tests).
+
+    Returns:
+        ``{id, status: "open", walkerId}``.
+
+    Raises:
+        HTTPException: 400 (too early), 403 (not the owner), 409 (illegal
+            transition), 500 (database).
+    """
+    walk_request = _owned_request(supabase, request_id, user.id)
+    _validate_lifecycle_transition(walk_request["status"], WalkEvent.NO_SHOW)
+    window_start = datetime.fromisoformat(walk_request["requested_time"])
+    if now < window_start + timedelta(minutes=DEFAULT_CONFIG.no_show_grace_min):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=NO_SHOW_TOO_EARLY_MESSAGE
+        )
+    _spend_walker_token(supabase, walk_request["walker_id"], now)
+    return _apply_transition(
+        supabase,
+        request_id,
+        walk_request,
+        WalkEvent.NO_SHOW,
+        {"status": "open"},
+        None,
+        now,
+    )
+
+
+@router.post("/requests/{request_id}/check-in")
+def check_in_walk(
+    request_id: str,
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+    now: datetime = Depends(get_now),
+) -> dict[str, Any]:
+    """Start the walk (the assigned walker only).
+
+    ``CHECK_IN`` moves the walk from ``assigned`` to ``in_walk`` and appends
+    a ``check_in`` row to the walk's timeline; any other state is a 409.
+
+    Args:
+        request_id: The walk request to check in to.
+        user: The authenticated walker.
+        supabase: The Supabase client.
+        now: The current time (dependency, frozen in tests).
+
+    Returns:
+        ``{id, status: "in_walk", walkerId}``.
+
+    Raises:
+        HTTPException: 403 (not the assigned walker), 409 (illegal transition),
+            500 (database).
+    """
+    walk_request = _assigned_request(supabase, request_id, user.id)
+    return _apply_transition(
+        supabase,
+        request_id,
+        walk_request,
+        WalkEvent.CHECK_IN,
+        {"status": "in_walk"},
+        "check_in",
+        now,
+    )
+
+
+@router.post("/requests/{request_id}/check-out")
+def check_out_walk(
+    request_id: str,
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+    now: datetime = Depends(get_now),
+) -> dict[str, Any]:
+    """Finish the walk (the assigned walker only).
+
+    ``CHECK_OUT`` moves the walk from ``in_walk`` to ``done`` and appends a
+    ``check_out`` row to the walk's timeline; any other state is a 409.
+
+    Args:
+        request_id: The walk request to check out of.
+        user: The authenticated walker.
+        supabase: The Supabase client.
+        now: The current time (dependency, frozen in tests).
+
+    Returns:
+        ``{id, status: "done", walkerId}``.
+
+    Raises:
+        HTTPException: 403 (not the assigned walker), 409 (illegal transition),
+            500 (database).
+    """
+    walk_request = _assigned_request(supabase, request_id, user.id)
+    return _apply_transition(
+        supabase,
+        request_id,
+        walk_request,
+        WalkEvent.CHECK_OUT,
+        {"status": "done"},
+        "check_out",
+        now,
+    )
