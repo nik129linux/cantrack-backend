@@ -28,8 +28,18 @@ from ..bidding_eligibility import (
 from ..db import first_row, run_query
 from ..deps import get_current_user, get_now, get_supabase
 from ..geo import haversine_km
-from ..schemas import CreateBiddingRequestBody, SendOfferBody
-from ..structures import IntervalTree, Quadtree, RatingWindow, UnionFind, WeightedGraph
+from ..schemas import CreateBiddingRequestBody, PickOfferBody, SendOfferBody
+from ..structures import (
+    IllegalTransition,
+    IntervalTree,
+    Quadtree,
+    RatingWindow,
+    UnionFind,
+    WalkEvent,
+    WalkState,
+    WalkStateMachine,
+    WeightedGraph,
+)
 
 router = APIRouter(prefix="/bidding")
 
@@ -54,6 +64,11 @@ WINDOW_FUTURE_MESSAGE = "windowStart must be in the future."
 NOT_YOUR_WALK_MESSAGE = "Not your walk request."
 WALK_NOT_VISIBLE_MESSAGE = "Walk not visible to you."
 WALKER_ALREADY_OFFERED_MESSAGE = "Walker already offered on this walk."
+PICK_OWNER_MESSAGE = "Only owners can pick an offer."
+AUTO_PICK_OWNER_MESSAGE = "Only owners can run an auto-pick."
+WALK_NO_LONGER_OPEN_MESSAGE = "Walk no longer open."
+DEADLINE_NOT_PASSED_MESSAGE = "Deadline has not passed yet."
+OFFER_NOT_FOUND_MESSAGE = "Offer not found."
 
 #: The statuses whose windows keep a walker busy.
 BUSY_STATUSES = ["assigned", "in_walk"]
@@ -607,3 +622,165 @@ def list_offers(
             }
         )
     return ranked_offers
+
+
+@router.post("/requests/{request_id}/pick")
+def pick_offer(
+    request_id: str,
+    body: PickOfferBody,
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+) -> dict[str, Any]:
+    """Pick the winning offer on an open walk request (the owning owner only).
+
+    The ``OWNER_PICK`` transition is validated through the WalkStateMachine,
+    then applied with a compare-and-set on the request status: the first pick
+    flips the walk to ``assigned`` and names the offer's walker; a later pick
+    loses with a 409 because the ``status='open`` filter matches zero rows.
+    An owner pick always wins over a later auto-pick, since auto-pick only
+    fires once the deadline has passed.
+
+    Args:
+        request_id: The walk request to resolve.
+        body: The offer the owner picks.
+        user: The authenticated owner.
+        supabase: The Supabase client.
+
+    Returns:
+        ``{id, status: "assigned", walkerId}``.
+
+    Raises:
+        HTTPException: 400 (not an owner), 403 (not the owner), 404 (unknown
+            offer), 409 (walk no longer open), 500 (database).
+    """
+    if _role(user) != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=PICK_OWNER_MESSAGE
+        )
+
+    walk_request = _owned_request(supabase, request_id, user.id)
+
+    _validate_transition(walk_request["status"], WalkEvent.OWNER_PICK)
+
+    offer_row = first_row(
+        run_query(
+            supabase.table(OFFERS_TABLE)
+            .select("*")
+            .eq("walk_request_id", request_id)
+            .eq("id", body.offerId)
+        ),
+        OFFER_NOT_FOUND_MESSAGE,
+    )
+
+    updated = run_query(
+        supabase.table(REQUESTS_TABLE)
+        .update({"status": "assigned", "walker_id": offer_row["walker_id"]})
+        .eq("id", request_id)
+        .eq("status", "open")
+    )
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=WALK_NO_LONGER_OPEN_MESSAGE
+        )
+    won = updated[0]
+    return {"id": won["id"], "status": won["status"], "walkerId": won["walker_id"]}
+
+
+@router.post("/requests/{request_id}/auto-pick")
+def auto_pick_offer(
+    request_id: str,
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+    now: datetime = Depends(get_now),
+) -> dict[str, Any]:
+    """Resolve an open walk request once its bidding deadline has passed.
+
+    Before ``deadline_at`` the request is still answerable, so this is a 400.
+    At or after the deadline the top-ranked offer wins (``AUTO_PICK``); with
+    no offers at all the walk ``DEADLINE_EMPTY`` → ``expired``. Both go
+    through the WalkStateMachine and the same compare-and-set on the request
+    status, so a walk already resolved by an owner pick matches zero rows
+    and answers 409.
+
+    Args:
+        request_id: The walk request to resolve.
+        user: The authenticated owner.
+        supabase: The Supabase client.
+        now: The current time (dependency, frozen in tests).
+
+    Returns:
+        ``{id, status, walkerId}`` — ``walkerId`` is None for an expiry.
+
+    Raises:
+        HTTPException: 400 (not an owner, deadline not passed), 403 (not the
+            owner), 409 (walk no longer open), 500 (database).
+    """
+    if _role(user) != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=AUTO_PICK_OWNER_MESSAGE
+        )
+
+    walk_request = _owned_request(supabase, request_id, user.id)
+
+    deadline_at = datetime.fromisoformat(walk_request["deadline_at"])
+    if now < deadline_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=DEADLINE_NOT_PASSED_MESSAGE
+        )
+
+    walk_offers = _load_walk_offers(supabase, request_id)
+    event = WalkEvent.AUTO_PICK if walk_offers else WalkEvent.DEADLINE_EMPTY
+    _validate_transition(walk_request["status"], event)
+
+    patch: dict[str, Any]
+    if walk_offers:
+        ranked_ids = rank_offers(walk_offers)
+        offer_map = {offer.offer_id: offer for offer in walk_offers}
+        winner = offer_map[ranked_ids[0]]
+        patch = {"status": "assigned", "walker_id": winner.walker_id}
+    else:
+        patch = {"status": "expired"}
+
+    updated = run_query(
+        supabase.table(REQUESTS_TABLE)
+        .update(patch)
+        .eq("id", request_id)
+        .eq("status", "open")
+    )
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=WALK_NO_LONGER_OPEN_MESSAGE
+        )
+    row = updated[0]
+    return {"id": row["id"], "status": row["status"], "walkerId": row["walker_id"]}
+
+
+def _owned_request(supabase: Client, request_id: str, owner_id: str) -> dict[str, Any]:
+    """Load a walk request scoped to its owner, or 403 for a foreign one. O(1)."""
+    walk_request_rows = run_query(
+        supabase.table(REQUESTS_TABLE)
+        .select("*")
+        .eq("id", request_id)
+        .eq("owner_id", owner_id)
+    )
+    if not walk_request_rows:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=NOT_YOUR_WALK_MESSAGE
+        )
+    return walk_request_rows[0]
+
+
+def _validate_transition(current_status: str, event: WalkEvent) -> None:
+    """Validate an event against a status through the WalkStateMachine. O(1).
+
+    Raises:
+        HTTPException: 409 ``Walk no longer open.`` when the machine refuses
+            the pair — the mapping every bidding endpoint uses for a walk that
+            has already left ``open``.
+    """
+    try:
+        WalkStateMachine.next_state(WalkState(current_status), event)
+    except IllegalTransition:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=WALK_NO_LONGER_OPEN_MESSAGE
+        ) from None
