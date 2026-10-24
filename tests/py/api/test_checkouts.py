@@ -43,6 +43,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from postgrest.exceptions import APIError
 
+from cantrack_api.app import limiter
+
 from .conftest import FIXED_NOW, bearer, make_user
 
 PNG = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) + b"\x00" * 40
@@ -646,10 +648,12 @@ class TestAiNoteRerunAndQuota:
     def test_the_61st_call_is_429_but_drafts_still_work(self, fake_client, vision):
         draft = self.setup_draft(fake_client)  # call 1
         for _ in range(59):  # calls 2..60
+            limiter.reset()  # this test is about the monthly quota, not the 5/min rate limit
             res = fake_client.post(f"/checkouts/{draft['id']}/ai-note", headers=bearer("token-w"))
             assert res.status_code == 200
         assert fake_client.get("/ai-quota", headers=bearer("token-w")).json()["used"] == 60
 
+        limiter.reset()
         res = fake_client.post(f"/checkouts/{draft['id']}/ai-note", headers=bearer("token-w"))
         assert res.status_code == 429
         assert res.json() == QUOTA_429
@@ -668,9 +672,11 @@ class TestAiNoteRerunAndQuota:
     def test_the_counter_resets_at_the_utc_month_boundary(self, fake_client, fake_clock):
         draft = self.setup_draft(fake_client)
         for _ in range(59):
+            limiter.reset()  # quota test, not a rate-limit test
             fake_client.post(f"/checkouts/{draft['id']}/ai-note", headers=bearer("token-w"))
 
         fake_clock.now = datetime(2026, 10, 31, 23, 59, 59, tzinfo=timezone.utc)
+        limiter.reset()
         res = fake_client.post(f"/checkouts/{draft['id']}/ai-note", headers=bearer("token-w"))
         assert res.status_code == 429
         quota = fake_client.get("/ai-quota", headers=bearer("token-w")).json()

@@ -15,7 +15,7 @@ from supabase_auth.types import User
 
 from cantrack_ai.embeddings import ClipEmbedder
 from ..db import first_row, run_query
-from ..deps import get_current_user, get_embedder, get_supabase
+from ..deps import current_role, get_current_user, get_embedder, get_supabase
 from ..schemas import CreateDogBody, DogProfileBody, UpdateDogBody
 from ..uploads import (
     MAX_REFERENCE_PHOTOS,
@@ -30,6 +30,7 @@ router = APIRouter(prefix="/dogs")
 DOGS_TABLE = "dogs"
 NOT_FOUND_MESSAGE = "Dog not found."
 DELETED_MESSAGE = "Dog deleted."
+OWNERS_ONLY_MESSAGE = "Only owners can manage dogs."
 
 #: The column the server-side embedding lives in; it is never sent back.
 EMBEDDING_COLUMN = "embedding"
@@ -65,7 +66,8 @@ def create_dog(
     """Register a new dog for the caller.
 
     The owner is always taken from the bearer token, never from the body, and
-    unknown fields in the body are dropped by the schema.
+    unknown fields in the body are dropped by the schema. Only an owner may
+    create a dog.
 
     Args:
         body: The dog's name and, optionally, its breed and notes.
@@ -76,8 +78,14 @@ def create_dog(
         The stored dog, including the id the database generated for it.
 
     Raises:
-        HTTPException: 500 if the insert fails.
+        HTTPException: 403 if the caller is not an owner, or 500 if the insert
+            fails.
     """
+    if current_role(user) != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=OWNERS_ONLY_MESSAGE
+        )
+
     row = {**body.model_dump(exclude_unset=True), "owner_id": user.id}
     rows = run_query(supabase.table(DOGS_TABLE).insert(row))
     return first_row(rows, NOT_FOUND_MESSAGE)

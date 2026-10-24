@@ -53,6 +53,7 @@ ACCEPT_STATE_MESSAGE = "Only a pending request can be accepted."
 DECLINE_STATE_MESSAGE = "Only a pending request can be declined."
 CANCEL_STATE_MESSAGE = "Only a pending or accepted request can be cancelled."
 COMPLETED_CANCEL_MESSAGE = "A completed request cannot be cancelled."
+STALE_MESSAGE = "This changed while you were acting on it. Reload and try again."
 
 #: A walk occupies [requested_time, requested_time + WALK_MINUTES), half-open,
 #: so back-to-back walks never conflict.
@@ -473,12 +474,17 @@ def accept_request(
     conflicts = tree.search(query_start, query_end)
 
     responded_at = now.isoformat()
-    run_query(
+    updated = run_query(
         supabase.table(REQUESTS_TABLE)
         .update({"status": "accepted", "responded_at": responded_at})
         .eq("id", request_id)
         .eq("walker_id", user.id)
+        .eq("status", row["status"])
     )
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=STALE_MESSAGE
+        )
     return {
         "id": row["id"],
         "status": "accepted",
@@ -517,12 +523,17 @@ def decline_request(
         )
 
     responded_at = now.isoformat()
-    run_query(
+    updated = run_query(
         supabase.table(REQUESTS_TABLE)
         .update({"status": "declined", "responded_at": responded_at})
         .eq("id", request_id)
         .eq("walker_id", user.id)
+        .eq("status", row["status"])
     )
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=STALE_MESSAGE
+        )
     return {"id": row["id"], "status": "declined", "respondedAt": responded_at}
 
 
@@ -581,10 +592,15 @@ def cancel_request(
             status_code=status.HTTP_400_BAD_REQUEST, detail=COMPLETED_CANCEL_MESSAGE
         )
 
-    run_query(
+    cancelled = run_query(
         supabase.table(REQUESTS_TABLE)
         .update({"status": "cancelled"})
         .eq("id", request_id)
         .eq("owner_id", user.id)
+        .eq("status", row["status"])
     )
+    if not cancelled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=STALE_MESSAGE
+        )
     return {"id": row["id"], "status": "cancelled"}

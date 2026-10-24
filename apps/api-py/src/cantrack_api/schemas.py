@@ -1,8 +1,9 @@
 """Pydantic request bodies for the auth, dogs and routes endpoints."""
 
-from typing import Literal
+import math
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool, model_validator
 
 UserRole = Literal["walker", "owner"]
 
@@ -10,22 +11,22 @@ UserRole = Literal["walker", "owner"]
 class SignupBody(BaseModel):
     """Body of ``POST /auth/signup``."""
 
-    email: EmailStr
-    password: str = Field(min_length=1)
+    email: EmailStr = Field(max_length=254)
+    password: str = Field(min_length=1, max_length=128)
     role: UserRole
 
 
 class LoginBody(BaseModel):
     """Body of ``POST /auth/login``."""
 
-    email: EmailStr
-    password: str = Field(min_length=1)
+    email: EmailStr = Field(max_length=254)
+    password: str = Field(min_length=1, max_length=128)
 
 
 class ResetPasswordBody(BaseModel):
     """Body of ``POST /auth/reset-password``."""
 
-    email: EmailStr
+    email: EmailStr = Field(max_length=254)
 
 
 class CreateDogBody(BaseModel):
@@ -36,9 +37,9 @@ class CreateDogBody(BaseModel):
     dropped instead of reaching the database.
     """
 
-    name: str = Field(min_length=1)
-    breed: str | None = None
-    notes: str | None = None
+    name: str = Field(min_length=1, max_length=80)
+    breed: str | None = Field(default=None, max_length=80)
+    notes: str | None = Field(default=None, max_length=1000)
 
 
 class UpdateDogBody(BaseModel):
@@ -48,9 +49,9 @@ class UpdateDogBody(BaseModel):
     partial body only touches the columns it actually carries.
     """
 
-    name: str | None = Field(default=None, min_length=1)
-    breed: str | None = None
-    notes: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    breed: str | None = Field(default=None, max_length=80)
+    notes: str | None = Field(default=None, max_length=1000)
 
 
 class RouteStopBody(BaseModel):
@@ -61,7 +62,7 @@ class RouteStopBody(BaseModel):
     visits nobody is not a walk.
     """
 
-    dogId: str = Field(min_length=1)
+    dogId: str = Field(min_length=1, max_length=64)
     pickupTime: str = Field(min_length=1)
 
 
@@ -72,7 +73,7 @@ class CreateRouteBody(BaseModel):
     body is dropped by the schema rather than trusted.
     """
 
-    stops: list[RouteStopBody] = Field(min_length=1)
+    stops: list[RouteStopBody] = Field(min_length=1, max_length=50)
 
 
 class ReorderRouteStopsBody(BaseModel):
@@ -82,7 +83,7 @@ class ReorderRouteStopsBody(BaseModel):
     stop; the router rejects it unless it is a permutation of every index.
     """
 
-    order: list[int] = Field(min_length=1)
+    order: list[int] = Field(min_length=1, max_length=50)
 
 
 class ConfirmCheckinBody(BaseModel):
@@ -92,7 +93,7 @@ class ConfirmCheckinBody(BaseModel):
     one by hand, so the only thing to send is which dog it is.
     """
 
-    dogId: str = Field(min_length=1)
+    dogId: str = Field(min_length=1, max_length=64)
 
 
 class PathEdgeBody(BaseModel):
@@ -105,8 +106,8 @@ class PathEdgeBody(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    from_: str = Field(alias="from", min_length=1)
-    to: str = Field(min_length=1)
+    from_: str = Field(alias="from", min_length=1, max_length=100)
+    to: str = Field(min_length=1, max_length=100)
     weight: float = Field(ge=0, allow_inf_nan=False)
 
 
@@ -119,9 +120,9 @@ class RoutePathBody(BaseModel):
     mean anything.
     """
 
-    edges: list[PathEdgeBody] = Field(default_factory=list)
-    start: str = Field(min_length=1)
-    end: str = Field(min_length=1)
+    edges: list[PathEdgeBody] = Field(default_factory=list, max_length=500)
+    start: str = Field(min_length=1, max_length=100)
+    end: str = Field(min_length=1, max_length=100)
 
 class SaveWalkerProfileBody(BaseModel):
     """Body of ``PUT /walker-profile`` (S1).
@@ -131,10 +132,10 @@ class SaveWalkerProfileBody(BaseModel):
     field sent by the client is dropped by the schema.
     """
 
-    displayName: str = Field(min_length=1)
-    bio: str | None = None
-    serviceArea: str | None = None
-    pricePerWalk: int = Field(ge=0)
+    displayName: str = Field(min_length=1, max_length=80)
+    bio: str | None = Field(default=None, max_length=500)
+    serviceArea: str | None = Field(default=None, max_length=120)
+    pricePerWalk: int = Field(ge=0, le=1_000_000)
 
 
 class DogProfileBody(BaseModel):
@@ -150,10 +151,10 @@ class DogProfileBody(BaseModel):
     energy: Literal["low", "medium", "high"]
     # Strict: a real JSON boolean, never a coerced string ("yes" must be a 400).
     leashTrained: StrictBool
-    allergies: str | None = None
-    medicalNotes: str | None = None
-    vetContact: str | None = None
-    emergencyContact: str | None = None
+    allergies: str | None = Field(default=None, max_length=500)
+    medicalNotes: str | None = Field(default=None, max_length=500)
+    vetContact: str | None = Field(default=None, max_length=500)
+    emergencyContact: str | None = Field(default=None, max_length=500)
 
 
 class CreateRequestBody(BaseModel):
@@ -166,8 +167,8 @@ class CreateRequestBody(BaseModel):
     enforce the timezone offset and the future-time rule.
     """
 
-    walkerId: str = Field(min_length=1)
-    dogId: str = Field(min_length=1)
+    walkerId: str = Field(min_length=1, max_length=64)
+    dogId: str = Field(min_length=1, max_length=64)
     # No min_length on purpose: the empty string must reach the router's
     # ISO-8601 parser and answer the exact TIME_MESSAGE 400, not pydantic's
     # generic validation list.
@@ -218,10 +219,10 @@ class CreateBiddingRequestBody(BaseModel):
     price in COP; the bids walkers send later decide who wins.
     """
 
-    dogId: str = Field(min_length=1)
+    dogId: str = Field(min_length=1, max_length=64)
     windowStart: str
     durationHours: float = Field(gt=0, le=12)
-    priceCop: int = Field(ge=0)
+    priceCop: int = Field(ge=0, le=1_000_000)
     pickupLat: float = Field(ge=-90, le=90, allow_inf_nan=False)
     pickupLng: float = Field(ge=-180, le=180, allow_inf_nan=False)
 
@@ -234,8 +235,23 @@ class SendOfferBody(BaseModel):
     the walker's stored position, never from the body.
     """
 
-    priceCop: int = Field(ge=0)
-    etaMin: float = Field(ge=0)
+    priceCop: int = Field(ge=0, le=1_000_000)
+    etaMin: float = Field(ge=0, le=240, allow_inf_nan=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sanitize_eta_min(cls, data: Any) -> Any:
+        """Replace a non-finite ETA with -1 so the 400 body stays serializable. O(1).
+
+        Pydantic echoes the rejected value in ``RequestValidationError.errors()``;
+        a NaN or infinity there cannot be re-serialized by the 400 handler. The
+        synthetic -1 still fails ``ge=0``, so the client gets the same clean 400.
+        """
+        if isinstance(data, dict):
+            value = data.get("etaMin")
+            if isinstance(value, float) and not math.isfinite(value):
+                data = {**data, "etaMin": -1.0}
+        return data
 
 
 class PickOfferBody(BaseModel):
@@ -245,7 +261,7 @@ class PickOfferBody(BaseModel):
     request status makes a second pick lose with a 409.
     """
 
-    offerId: str = Field(min_length=1)
+    offerId: str = Field(min_length=1, max_length=64)
 
 
 class RatingBody(BaseModel):

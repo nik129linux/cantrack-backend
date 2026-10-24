@@ -16,14 +16,24 @@ import uuid
 from operator import itemgetter
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from supabase import Client
 from supabase_auth.types import User
 
 from cantrack_ai.embeddings import ClipEmbedder, cosine_similarity, parse_embedding
 from cantrack_ai.vision import OllamaVision
+from ..app import limiter
 from ..db import first_row, run_query
-from ..deps import get_current_user, get_embedder, get_supabase, get_vision
+from ..deps import current_role, get_current_user, get_embedder, get_supabase, get_vision
 from ..schemas import (
     ConfirmCheckinBody,
     CreateRouteBody,
@@ -39,6 +49,10 @@ router = APIRouter(prefix="/routes")
 ROUTES_TABLE = "routes"
 DOGS_TABLE = "dogs"
 CHECKINS_TABLE = "checkins"
+REQUESTS_TABLE = "walk_requests"
+
+#: The walk statuses whose dogs the walker may put on a route.
+ROUTABLE_STATUSES = ["accepted", "assigned", "in_walk"]
 
 #: Cosine similarity at or above which the check-in is trusted to be the right
 #: dog and is written without asking the walker (FR-10).
@@ -54,6 +68,8 @@ NO_DOG_MESSAGE = "No dog detected in the photo."
 NOT_ON_ROUTE_MESSAGE = "That dog is not on this route."
 NO_CHECKIN_MESSAGE = "No check-in found."
 UNDONE_MESSAGE = "Check-in undone."
+WALKERS_ONLY_MESSAGE = "Only walkers can manage routes."
+ROUTE_DOG_FORBIDDEN_MESSAGE = "You can only route dogs from walks assigned to you."
 
 
 def _to_stored_stop(stop: RouteStopBody) -> dict[str, str]:
@@ -296,7 +312,9 @@ def next_pickup(
 
 
 @router.post("/path")
+@limiter.limit("20/minute")
 def compute_path(
+    request: Request,
     body: RoutePathBody,
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -306,6 +324,7 @@ def compute_path(
     afterwards: it describes this walk, not a persisted street network.
 
     Args:
+        request: The incoming request, required by the rate limiter.
         body: The directed legs, the start node and the target node.
         user: The authenticated walker.
 
@@ -339,7 +358,11 @@ def create_route(
 
     The stops are appended to a singly linked list in the order they were sent
     and stored from it, so the order the client asked for is the order that is
-    walked. The walker always comes from the bearer token.
+    walked. The walker always comes from the bearer token. Only a walker may
+    plan a route, and every stop's dog must be on a walk assigned to the walker
+    and still active. One other dog (a stranger's, or an id that matches nothing)
+    refuses the whole route before anything is written, with the same answer
+    either way, so the endpoint never says which dog ids exist.
 
     Args:
         body: The ordered stops of the walk.
@@ -350,8 +373,27 @@ def create_route(
         The stored route, with each stop's dog name attached.
 
     Raises:
-        HTTPException: 500 if the insert fails.
+        HTTPException: 403 if the caller is not a walker or a stop's dog is not
+            on one of their active walks, or 500 if the insert fails.
     """
+    if current_role(user) != "walker":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=WALKERS_ONLY_MESSAGE
+        )
+
+    assigned = run_query(
+        supabase.table(REQUESTS_TABLE)
+        .select("dog_id")
+        .eq("walker_id", user.id)
+        .in_("status", ROUTABLE_STATUSES)
+    )
+    routable_dog_ids = {row["dog_id"] for row in assigned}
+    if any(stop.dogId not in routable_dog_ids for stop in body.stops):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ROUTE_DOG_FORBIDDEN_MESSAGE,
+        )
+
     stops: SinglyLinkedList[RouteStopBody] = SinglyLinkedList()
     for stop in body.stops:
         stops.append(stop)
