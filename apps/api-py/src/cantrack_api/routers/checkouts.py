@@ -46,7 +46,7 @@ from supabase_auth.types import User
 
 from cantrack_ai.vision import OllamaVision
 from ..db import first_row, run_query
-from ..deps import get_current_user, get_now, get_supabase, get_vision
+from ..deps import current_role, get_current_user, get_now, get_supabase, get_vision
 from ..schemas import UpdateCheckoutNoteBody
 from ..structures import DoublyLinkedList
 
@@ -110,8 +110,8 @@ _WEBP_MAGIC = b"WEBP"
 
 
 def _role(user: User) -> str | None:
-    metadata = getattr(user, "user_metadata", None) or {}
-    return metadata.get("role")
+    """The server-assigned role (``deps.current_role``), never the client claim. O(1)."""
+    return current_role(user)
 
 
 def _image_kind(data: bytes) -> tuple[str, str] | None:

@@ -27,14 +27,46 @@ from .fake_supabase import FakeSupabase
 
 
 def make_user(user_id="user-1", email="walker@example.com", role="walker") -> User:
+    """A user whose role was set server-side (``app_metadata``), as signup does.
+
+    The same value is mirrored into ``user_metadata`` the way legacy accounts
+    look, so a router that still reads the client-writable copy cannot be told
+    apart here; ``make_spoofed_user`` is the case that separates them.
+    """
     return User(
         id=user_id,
         email=email,
-        app_metadata={},
+        app_metadata={"role": role},
         user_metadata={"role": role},
         aud="authenticated",
         created_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
     )
+
+
+def make_spoofed_user(user_id, email, real_role, claimed_role) -> User:
+    """A user who rewrote their own ``user_metadata.role`` from the browser.
+
+    ``supabase.auth.updateUser({data: {role}})`` needs nothing but the user's
+    own session, so ``claimed_role`` is attacker-controlled; ``real_role`` is
+    what the server stored in ``app_metadata`` (None = never assigned).
+    """
+    return User(
+        id=user_id,
+        email=email,
+        app_metadata={"role": real_role} if real_role is not None else {},
+        user_metadata={"role": claimed_role},
+        aud="authenticated",
+        created_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Every test starts with empty rate-limit buckets (the limiter is global)."""
+    from cantrack_api.app import limiter
+
+    limiter.reset()
+    yield
 
 
 def make_session(token="token-abc", user=None) -> Session:

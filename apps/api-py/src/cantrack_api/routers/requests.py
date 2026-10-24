@@ -29,7 +29,7 @@ from supabase import Client
 from supabase_auth.types import User
 
 from ..db import first_row, run_query
-from ..deps import get_current_user, get_now, get_supabase
+from ..deps import current_role, get_current_user, get_now, get_supabase
 from ..schemas import CreateRequestBody
 from ..structures import IntervalTree, Queue
 
@@ -66,8 +66,8 @@ ACTIVE_STATUSES = ["pending", "accepted"]
 
 
 def _role(user: User) -> str | None:
-    metadata = getattr(user, "user_metadata", None) or {}
-    return metadata.get("role")
+    """The server-assigned role (``deps.current_role``), never the client claim. O(1)."""
+    return current_role(user)
 
 
 def _parse_time(value: str) -> datetime:

@@ -40,7 +40,7 @@ from ..bidding_eligibility import (
     project_to_metres,
 )
 from ..db import first_row, run_query
-from ..deps import get_current_user, get_now, get_supabase
+from ..deps import current_role, get_current_user, get_now, get_supabase
 from ..geo import haversine_km
 from ..replay import (
     BACKWARD,
@@ -115,9 +115,8 @@ QUADTREE_BOUNDS = (-20_000_000.0, -20_000_000.0, 20_000_000.0, 20_000_000.0)
 
 
 def _role(user: User) -> str | None:
-    """Read the role claim, mirroring the S1 routers. O(1)."""
-    metadata = getattr(user, "user_metadata", None) or {}
-    return metadata.get("role")
+    """The server-assigned role (``deps.current_role``), never the client claim. O(1)."""
+    return current_role(user)
 
 
 def _parse_window_start(value: str) -> datetime:

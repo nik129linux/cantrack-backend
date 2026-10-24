@@ -37,7 +37,7 @@ from supabase import Client
 from supabase_auth.types import User
 
 from ..db import run_query
-from ..deps import get_current_user, get_supabase
+from ..deps import current_role, get_current_user, get_supabase
 from ..geo import haversine_km
 from ..schemas import SuggestPlanBody
 from ..structures import AvlTree, UnionFind
@@ -75,8 +75,8 @@ MAX_GROUP_SIZE = 4
 
 
 def _role(user: User) -> str | None:
-    metadata = getattr(user, "user_metadata", None) or {}
-    return metadata.get("role")
+    """The server-assigned role (``deps.current_role``), never the client claim. O(1)."""
+    return current_role(user)
 
 
 def _parse_utc(value: str) -> datetime:

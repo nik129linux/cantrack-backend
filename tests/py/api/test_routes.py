@@ -5,14 +5,29 @@ import uuid
 import pytest
 from postgrest.exceptions import APIError
 
-from .conftest import bearer
+from .conftest import bearer, make_user
 
 W = "token-w"  # walker-w
-OTHER = "token-a"  # a different authenticated user
+OTHER = "token-w2"  # a different walker (owners cannot create routes since PR0)
+
+
+@pytest.fixture(autouse=True)
+def second_walker(fake):
+    fake.add_user(OTHER, make_user("walker-w2", "walker-w2@example.com", "walker"))
 
 
 def seed_dog(fake, name, dog_id=None):
-    return fake.seed("dogs", id=dog_id or str(uuid.uuid4()), owner_id="owner-a", name=name)
+    """A dog plus the accepted walks that let BOTH walkers put it on a route.
+
+    PR0: a walker may only route dogs from walks assigned to them, so every
+    dog these tests route needs an active walk with that walker.
+    """
+    dog = fake.seed("dogs", id=dog_id or str(uuid.uuid4()), owner_id="owner-a", name=name)
+    for walker_id in ("walker-w", "walker-w2"):
+        fake.seed("walk_requests", id=str(uuid.uuid4()), owner_id="owner-a", walker_id=walker_id,
+                  dog_id=dog["id"], status="accepted", requested_time="2026-10-05T08:00:00+00:00",
+                  pickup_lat=6.2, pickup_lng=-75.5, price_cop=20000)
+    return dog
 
 
 def stops_for(*dogs, times=None):

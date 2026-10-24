@@ -103,6 +103,11 @@ class FakeQuery:
         if self._db.fail_with is not None:
             error, self._db.fail_with = self._db.fail_with, None
             raise error
+        # A concurrent writer slipping in between this request's read and its
+        # write: the hook runs once, right before the first matching operation.
+        hook = self._db.before_execute.pop((self._table, self._op), None)
+        if hook is not None:
+            hook(self._db)
         rows = self._db.tables.setdefault(self._table, [])
         if self._op == "insert":
             row = {
@@ -213,9 +218,37 @@ class FakeStorage:
         return self.buckets.setdefault(bucket, FakeStorageBucket(self, bucket))
 
 
+class FakeAdmin:
+    """Double of ``supabase.auth.admin``: the service-role user management API.
+
+    ``update_user_by_id(uid, attributes)`` merges ``app_metadata`` into the
+    stored user (the real call does the same server-side) and records the call.
+    """
+
+    def __init__(self, auth: "FakeAuth") -> None:
+        self._auth = auth
+        self.calls: list[tuple[str, str, Any]] = []
+        self.fail = False
+
+    def update_user_by_id(self, uid: str, attributes: dict[str, Any]) -> SimpleNamespace:
+        self.calls.append(("update", uid, attributes))
+        if self.fail:
+            raise AuthApiError("admin unavailable", 500, None)
+        for user in self._auth.users_by_token.values():
+            if user.id == uid:
+                merged = {**(user.app_metadata or {}), **attributes.get("app_metadata", {})}
+                user.app_metadata = merged
+                return SimpleNamespace(user=user)
+        raise AuthApiError("User not found", 404, None)
+
+    def delete_user(self, uid: str) -> None:
+        self.calls.append(("delete", uid, None))
+
+
 class FakeAuth:
     def __init__(self) -> None:
         self.users_by_token: dict[str, Any] = {}
+        self.admin = FakeAdmin(self)
 
     def get_user(self, token: str) -> SimpleNamespace:
         user = self.users_by_token.get(token)
@@ -231,6 +264,8 @@ class FakeSupabase:
         self.tables: dict[str, list[dict[str, Any]]] = {}
         self.queries: list[tuple[str, str, list[tuple[str, Any]]]] = []
         self.fail_with: Exception | None = None
+        #: (table, op) -> callable(db), run once before that operation executes.
+        self.before_execute: dict[tuple[str, str], Any] = {}
 
     def table(self, name: str) -> FakeQuery:
         return FakeQuery(self, name)

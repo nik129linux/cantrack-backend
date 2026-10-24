@@ -1,4 +1,4 @@
-"""Task 3: schema.sql has a policy for every RLS-enabled table.
+"""PR0: every table has RLS enabled and NO policy (deny-all for anon/authenticated).
 
 The schema lives in the sibling repo cantrack-db (split repos under ~/cantrack-split),
 not inside this repo, so we resolve it as ../cantrack-db relative to the backend root.
@@ -29,15 +29,21 @@ class TestRlsPolicies:
         for table in RLS_TABLES:
             assert re.search(rf"alter table public\.{table} enable row level security", sql), f"missing RLS on {table}"
 
-    def test_schema_has_a_policy_per_table(self):
+    def test_no_table_has_any_policy(self):
+        # PR0: deny-all. The `for all` policies let a user write straight to
+        # Supabase REST with the anon key + their own token, skipping the API.
+        sql = SCHEMA.read_text()
+        assert not re.search(r"create policy", sql, re.IGNORECASE)
+
+    def test_every_old_policy_is_dropped(self):
         sql = SCHEMA.read_text()
         for table in RLS_TABLES:
-            assert re.search(rf"create policy.*on public\.{table}", sql, re.IGNORECASE), f"missing policy on {table}"
+            assert re.search(rf'drop policy if exists "[a-z_]+" on public\.{table};', sql), f"no drop for {table}"
 
-    def test_policies_are_commented_as_defence_in_depth(self):
+    def test_deny_all_is_explained(self):
         sql = SCHEMA.read_text().lower()
-        assert "defence in depth" in sql or "defense in depth" in sql
-        assert "service-role" in sql or "service_role" in sql or "service role" in sql
+        assert "deny-all" in sql
+        assert "service-role" in sql
 
     def test_schema_still_has_16_rls_tables(self):
         sql = SCHEMA.read_text()

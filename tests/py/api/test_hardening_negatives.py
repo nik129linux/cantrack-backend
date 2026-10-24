@@ -43,13 +43,14 @@ def seed_assigned(fake, request_id="walk-1", walker_id="walker-w"):
 
 
 class TestAuthNegatives:
-    def test_whoami_without_token_is_401(self, fake_client):
-        res = fake_client.get("/_whoami")
+    def test_protected_route_without_token_is_401(self, fake_client):
+        # /_whoami was removed in PR0 (the professor's "/me"); any guarded route works.
+        res = fake_client.get("/dogs")
         assert res.status_code == 401
         assert res.json()["detail"] == "A bearer token is required."
 
-    def test_whoami_bad_token_is_401(self, fake_client):
-        res = fake_client.get("/_whoami", headers=bearer("bad-token"))
+    def test_protected_route_bad_token_is_401(self, fake_client):
+        res = fake_client.get("/dogs", headers=bearer("bad-token"))
         assert res.status_code == 401
 
     def test_login_headers_present_on_401(self, fake_client):

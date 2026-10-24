@@ -20,7 +20,7 @@ from supabase import Client
 from supabase_auth.types import User
 
 from ..db import run_query
-from ..deps import get_current_user, get_supabase
+from ..deps import current_role, get_current_user, get_supabase
 
 router = APIRouter(prefix="/clients")
 
@@ -36,8 +36,8 @@ REQUEST_COLUMNS = (
 
 
 def _role(user: User) -> str | None:
-    metadata = getattr(user, "user_metadata", None) or {}
-    return metadata.get("role")
+    """The server-assigned role (``deps.current_role``), never the client claim. O(1)."""
+    return current_role(user)
 
 
 def profile_to_api(profile: dict[str, Any] | None) -> dict[str, Any] | None:
