@@ -877,7 +877,7 @@
                 "exec": [
                   "const n = Number(pm.environment.get(\"floodCount\"));",
                   "if (n < 6) {",
-                  "    postman.setNextRequest(\"E20 login flood → 429 on the 6th try\");",
+                  "    pm.execution.setNextRequest(\"E20 login flood → 429 on the 6th try\");",
                   "} else {",
                   "    pm.environment.unset(\"floodCount\");",
                   "    pm.test(\"6th login in a minute is rate-limited\", function () { pm.response.to.have.status(429); });",

@@ -36,7 +36,7 @@ class TestNoIdentityEcho:
         assert res.status_code == 404
 
     def test_no_route_echoes_the_caller(self):
-        paths = {route.path for route in create_app().routes}
+        paths = {getattr(route, "path", None) for route in create_app().routes}
         assert not {"/_whoami", "/me", "/users/me", "/auth/me", "/whoami"} & paths
 
 

@@ -5,8 +5,12 @@ services:
     runtime: docker
     rootDir: apps/api-py
     plan: free
-    healthCheckPath: /docs
+    healthCheckPath: /health
     envVars:
+      - key: ENV
+        value: production
+      - key: TRUSTED_PROXY_IPS
+        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY

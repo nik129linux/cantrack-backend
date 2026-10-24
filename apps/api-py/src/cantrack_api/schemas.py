@@ -1,9 +1,8 @@
 """Pydantic request bodies for the auth, dogs and routes endpoints."""
 
-import math
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool
 
 UserRole = Literal["walker", "owner"]
 
@@ -238,20 +237,6 @@ class SendOfferBody(BaseModel):
     priceCop: int = Field(ge=0, le=1_000_000)
     etaMin: float = Field(ge=0, le=240, allow_inf_nan=False)
 
-    @model_validator(mode="before")
-    @classmethod
-    def _sanitize_eta_min(cls, data: Any) -> Any:
-        """Replace a non-finite ETA with -1 so the 400 body stays serializable. O(1).
-
-        Pydantic echoes the rejected value in ``RequestValidationError.errors()``;
-        a NaN or infinity there cannot be re-serialized by the 400 handler. The
-        synthetic -1 still fails ``ge=0``, so the client gets the same clean 400.
-        """
-        if isinstance(data, dict):
-            value = data.get("etaMin")
-            if isinstance(value, float) and not math.isfinite(value):
-                data = {**data, "etaMin": -1.0}
-        return data
 
 
 class PickOfferBody(BaseModel):

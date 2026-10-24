@@ -7,6 +7,8 @@ not inside this repo, so we resolve it as ../cantrack-db relative to the backend
 import pathlib
 import re
 
+import pytest
+
 # tests/py/api/test_rls_policies.py -> parents[3] == cantrack-backend, parents[4] == cantrack-split.
 _BACKEND = pathlib.Path(__file__).resolve().parents[3]
 _CANDIDATES = [
@@ -14,6 +16,9 @@ _CANDIDATES = [
     _BACKEND / "cantrack-db" / "apps" / "api-py" / "schema.sql",          # monorepo fallback
 ]
 SCHEMA = next((p for p in _CANDIDATES if p.exists()), _CANDIDATES[0])
+
+# CI checks out this repo alone; the schema lives in cantrack-db.
+pytestmark = pytest.mark.skipif(not SCHEMA.exists(), reason="cantrack-db not checked out next to this repo")
 
 RLS_TABLES = [
     "dogs", "routes", "checkins", "walker_profiles", "walk_requests",
