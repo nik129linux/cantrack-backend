@@ -393,7 +393,9 @@ class TestDraftCreation:
         fake.fail_with = api_error()
         res = post_checkout(fake_client, rid)
         assert res.status_code == 500
-        assert res.json() == {"detail": "connection lost"}
+        # PR0: the database message never reaches the client (opaque 500 + errorId).
+        assert res.json()["detail"] == "Something went wrong on our side."
+        assert "connection lost" not in res.text
 
 
 class TestEditNote:

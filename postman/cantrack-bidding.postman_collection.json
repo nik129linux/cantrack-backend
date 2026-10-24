@@ -632,7 +632,7 @@
       ]
     },
     {
-      "name": "NEG rating above 5 \u2192 422",
+      "name": "NEG rating above 5 \u2192 400",
       "request": {
         "method": "POST",
         "header": [
@@ -668,8 +668,8 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test(\"422 Unprocessable (rating out of range)\", function () {",
-              "    pm.response.to.have.status(422);",
+              "pm.test(\"400 Bad Request (rating out of range)\", function () {",
+              "    pm.response.to.have.status(400);",
               "});"
             ]
           }

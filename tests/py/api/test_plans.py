@@ -599,9 +599,11 @@ class TestLocalDay:
 
 
 class TestErrors:
-    def test_database_error_is_500_with_message(self, fake_client, fake):
+    def test_database_error_is_opaque_500(self, fake_client, fake):
         save_profile(fake_client)
         fake.fail_with = api_error()
         res = suggest(fake_client)
         assert res.status_code == 500
-        assert res.json() == {"detail": "connection lost"}
+        # PR0: the database message never reaches the client (opaque 500 + errorId).
+        assert res.json()["detail"] == "Something went wrong on our side."
+        assert "connection lost" not in res.text

@@ -109,11 +109,13 @@ class TestSaveProfile:
         assert res.json() == {"detail": "Only walkers can save a walker profile."}
         assert fake.tables.get("walker_profiles", []) == []
 
-    def test_database_error_is_500_with_message(self, fake_client, fake):
+    def test_database_error_is_opaque_500(self, fake_client, fake):
         fake.fail_with = api_error()
         res = fake_client.put("/walker-profile", json=VALID, headers=bearer("token-w"))
         assert res.status_code == 500
-        assert res.json() == {"detail": "connection lost"}
+        # PR0: the database message never reaches the client (opaque 500 + errorId).
+        assert res.json()["detail"] == "Something went wrong on our side."
+        assert "connection lost" not in res.text
 
     def test_the_pre_insert_lookup_is_scoped_to_the_caller(self, fake_client, fake):
         fake_client.put("/walker-profile", json=VALID, headers=bearer("token-w"))

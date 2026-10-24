@@ -221,11 +221,13 @@ class TestClientList:
         assert item["requestId"] == rid
         assert item["requestedTime"] == "2026-10-05T10:00:00+00:00"
 
-    def test_database_error_is_500_with_message(self, fake_client, fake):
+    def test_database_error_is_opaque_500(self, fake_client, fake):
         fake.fail_with = api_error()
         res = fake_client.get("/clients", headers=bearer("token-w"))
         assert res.status_code == 500
-        assert res.json() == {"detail": "connection lost"}
+        # PR0: the database message never reaches the client (opaque 500 + errorId).
+        assert res.json()["detail"] == "Something went wrong on our side."
+        assert "connection lost" not in res.text
 
 
 def test_clients_queries_are_scoped_to_the_caller(fake_client, fake):

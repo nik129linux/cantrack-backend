@@ -91,10 +91,12 @@ class TestCreate:
         assert res.status_code == 400
         assert fake.tables.get("routes", []) == []
 
-    def test_a_stop_whose_dog_does_not_exist_gets_null_name(self, fake_client):
+    def test_a_stop_whose_dog_does_not_exist_is_refused(self, fake_client, fake):
+        # PR0: a dog must come from a walk assigned to the walker. An unknown id is
+        # refused like a stranger's dog, so the answer never tells which ids exist.
         res = create_route(fake_client, [{"dogId": "ghost", "pickupTime": "2026-10-05T08:00:00Z"}])
-        assert res.status_code == 201
-        assert res.json()["stops"][0]["dogName"] is None
+        assert res.status_code == 403
+        assert fake.tables.get("routes", []) == []
 
     def test_database_error_is_500(self, fake_client, fake, dogs):
         fake.fail_with = APIError({"message": "down", "code": "X", "hint": None, "details": None})

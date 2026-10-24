@@ -6,7 +6,7 @@ collection for the walk-bidding API (FR-23..FR-27) and an environment file.
 - `cantrack-bidding.postman_collection.json` — 15 requests: the happy path (post a
   request → two offers → ranked list → pick → check-in → check-out → rate → replay),
   followed by the negative cases (second pick → 409, check-out from `assigned` → 409,
-  wrong-owner pick → 403, second offer by the same walker → 409, rating above 5 → 422).
+  wrong-owner pick → 403, second offer by the same walker → 409, rating above 5 → 400).
   Every request carries a `pm.test` assertion.
 - `cantrack-bidding.postman_environment.json` — `baseUrl` plus token/id variables. The
   tokens are placeholders; it never contains a real secret.
@@ -37,3 +37,17 @@ npx newman run cantrack-bidding.postman_collection.json \
 Keep real tokens out of git: copy the environment file to an untracked one
 (`cp cantrack-bidding.postman_environment.json local.env.json`), fill the tokens there,
 and run Newman with `-e local.env.json`.
+
+## Security exploits collection (PR0)
+
+`cantrack-security.postman_collection.json` + `cantrack-security.postman_environment.json`:
+20 attacks a logged-in user can try with their own token (role spoofing, IDOR, overflow,
+oversized bodies, error leaks, account enumeration, login flood). Run `Setup` first, then
+`Exploits`; every request must get the 4xx in its name. The full list, with the regression
+test behind each one, is in `docs/security/exploits-security.md`.
+
+```
+npx newman run cantrack-security.postman_collection.json -e local.security.env.json
+```
+
+Against the deployed API set `isProduction=true` (Swagger must then be a 404).
