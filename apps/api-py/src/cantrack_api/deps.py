@@ -18,6 +18,8 @@ from supabase_auth.types import User
 from cantrack_ai.embeddings import ClipEmbedder
 from cantrack_ai.vision import OllamaVision
 
+from .ai_text import OllamaText
+
 BEARER = "bearer"
 
 #: The only roles the API grants. Anything else in app_metadata is ignored.
@@ -77,6 +79,19 @@ def get_vision() -> OllamaVision:
         An ``OllamaVision`` configured from the environment.
     """
     return OllamaVision.from_env()
+
+
+@lru_cache(maxsize=1)
+def get_text_model() -> OllamaText:
+    """Return the process-wide text model client, built on first use.
+
+    Disabled (never calls out) when ``OLLAMA_API_KEY`` is unset. Tests swap it
+    through ``app.dependency_overrides[get_text_model]``.
+
+    Returns:
+        An ``OllamaText`` configured from the environment.
+    """
+    return OllamaText.from_env()
 
 
 def get_now() -> datetime:
