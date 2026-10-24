@@ -283,10 +283,16 @@ def create_app() -> FastAPI:
         checkouts,
         clients,
         dogs,
+        explore,
+        explore_ai,
+        home,
         plans,
+        profile,
+        profile_data,
         requests,
         routes,
         walker_profiles,
+        walks,
     )
 
     application.include_router(auth.router)
@@ -298,6 +304,10 @@ def create_app() -> FastAPI:
     application.include_router(clients.router)
     application.include_router(plans.router)
     application.include_router(checkouts.router)
+    # Owner tabs (PR1-PR4). Each module owns its endpoints; registered here once
+    # so the tab PRs never touch this file.
+    for owner_tab in (home, explore, explore_ai, walks, profile, profile_data):
+        application.include_router(owner_tab.router)
 
     from starlette.exceptions import HTTPException as StarletteHTTPException
 

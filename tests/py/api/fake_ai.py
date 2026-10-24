@@ -40,3 +40,16 @@ class FakeVision:
     def check(self, data: bytes) -> PhotoCheck:
         self.calls.append(data)
         return self.result
+
+
+class FakeTextModel:
+    """Double of ``OllamaText``: returns ``result`` (a dict or None) and records calls."""
+
+    def __init__(self) -> None:
+        self.result: dict | None = None
+        self.enabled = True
+        self.calls: list[tuple[str, str]] = []
+
+    def complete_json(self, system: str, prompt: str) -> dict | None:
+        self.calls.append((system, prompt))
+        return self.result

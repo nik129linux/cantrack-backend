@@ -19,10 +19,11 @@ from cantrack_api.deps import (
     get_current_user,
     get_embedder,
     get_supabase,
+    get_text_model,
     get_vision,
 )
 
-from .fake_ai import FakeEmbedder, FakeVision
+from .fake_ai import FakeEmbedder, FakeTextModel, FakeVision
 from .fake_supabase import FakeSupabase
 
 
@@ -153,12 +154,18 @@ def vision() -> FakeVision:
 
 
 @pytest.fixture
-def fake_client(fake, embedder, vision, fake_clock) -> TestClient:
+def text_model() -> FakeTextModel:
+    return FakeTextModel()
+
+
+@pytest.fixture
+def fake_client(fake, embedder, vision, fake_clock, text_model) -> TestClient:
     application = create_app()
     application.dependency_overrides[get_supabase] = lambda: fake
     application.dependency_overrides[get_auth_client] = lambda: fake
     application.dependency_overrides[get_embedder] = lambda: embedder
     application.dependency_overrides[get_vision] = lambda: vision
+    application.dependency_overrides[get_text_model] = lambda: text_model
     # get_now is the overridable clock dependency the S1 endpoints use for the
     # "requestedTime must be in the future" rule. It is imported lazily so this
     # conftest stays importable (and the pre-existing suite stays green) while
