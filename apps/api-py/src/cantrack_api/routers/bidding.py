@@ -40,7 +40,7 @@ from ..bidding_eligibility import (
     project_to_metres,
 )
 from ..db import first_row, run_query
-from ..deps import get_current_user, get_now, get_supabase
+from ..deps import current_role, get_current_user, get_now, get_supabase
 from ..geo import haversine_km
 from ..replay import (
     BACKWARD,
@@ -88,9 +88,15 @@ WINDOW_TIME_MESSAGE = (
     "windowStart must be an ISO-8601 datetime with a timezone offset."
 )
 WINDOW_FUTURE_MESSAGE = "windowStart must be in the future."
+WINDOW_TOO_FAR_MESSAGE = "windowStart must be within the next 30 days."
+
+#: How far ahead an owner may open a walk request.
+MAX_WINDOW_AHEAD_DAYS = 30
 NOT_YOUR_WALK_MESSAGE = "Not your walk request."
+WALKER_AT_PICKUP_MESSAGE = "The walker is at the pickup point. Contact them before marking a no-show."
 WALK_NOT_VISIBLE_MESSAGE = "Walk not visible to you."
 WALKER_ALREADY_OFFERED_MESSAGE = "Walker already offered on this walk."
+SELF_BID_MESSAGE = "You cannot bid on your own walk request."
 PICK_OWNER_MESSAGE = "Only owners can pick an offer."
 AUTO_PICK_OWNER_MESSAGE = "Only owners can run an auto-pick."
 WALK_NO_LONGER_OPEN_MESSAGE = "Walk no longer open."
@@ -115,9 +121,8 @@ QUADTREE_BOUNDS = (-20_000_000.0, -20_000_000.0, 20_000_000.0, 20_000_000.0)
 
 
 def _role(user: User) -> str | None:
-    """Read the role claim, mirroring the S1 routers. O(1)."""
-    metadata = getattr(user, "user_metadata", None) or {}
-    return metadata.get("role")
+    """The server-assigned role (``deps.current_role``), never the client claim. O(1)."""
+    return current_role(user)
 
 
 def _parse_window_start(value: str) -> datetime:
@@ -207,6 +212,18 @@ def create_bidding_request(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=WINDOW_FUTURE_MESSAGE
         )
+    if window_start > now + timedelta(days=MAX_WINDOW_AHEAD_DAYS):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=WINDOW_TOO_FAR_MESSAGE
+        )
+    try:
+        window_end = window_start + timedelta(hours=body.durationHours)
+    except OverflowError:
+        # A timestamp near datetime.max cannot grow by the duration; that is
+        # hostile input, not a server fault.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=WINDOW_TIME_MESSAGE
+        ) from None
 
     rows = run_query(
         supabase.table(REQUESTS_TABLE).insert(
@@ -216,9 +233,7 @@ def create_bidding_request(
                 "dog_id": body.dogId,
                 "status": "open",
                 "requested_time": body.windowStart,
-                "window_end": (
-                    window_start + timedelta(hours=body.durationHours)
-                ).isoformat(),
+                "window_end": window_end.isoformat(),
                 "deadline_at": (
                     now + timedelta(minutes=DEFAULT_CONFIG.auto_pick_after_min)
                 ).isoformat(),
@@ -502,6 +517,10 @@ def send_offer(
         ),
         NOT_FOUND_MESSAGE,
     )
+    if walk_request["owner_id"] == user.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=SELF_BID_MESSAGE
+        )
     if walk_request["status"] != "open":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=WALK_NOT_VISIBLE_MESSAGE
@@ -942,7 +961,9 @@ def _spend_walker_token(
     A missing ``walker_cancel_buckets`` row starts the period full at
     ``cancel_tokens_per_week``; an existing row replays its stored state
     through :func:`spend_cancel_token` so the weekly refill applies. The row
-    is written only when a token was actually spent.
+    is written only when a token was actually spent, as a compare-and-set on
+    the read ``remaining`` value: a concurrent spend that lands first matches
+    zero rows, so the row is re-read and the spend retried (at most 5 tries).
 
     Args:
         supabase: The Supabase client.
@@ -952,44 +973,54 @@ def _spend_walker_token(
     Returns:
         ``(spent, new_remaining)``.
     """
-    bucket_rows = run_query(
-        supabase.table(BUCKETS_TABLE).select("*").eq("walker_id", walker_id)
-    )
-    if bucket_rows:
+    for _ in range(5):
+        bucket_rows = run_query(
+            supabase.table(BUCKETS_TABLE).select("*").eq("walker_id", walker_id)
+        )
+        if not bucket_rows:
+            period_start = now.timestamp()
+            cancel_bucket = TokenBucket(
+                DEFAULT_CONFIG.cancel_tokens_per_week, WEEK_SECONDS, period_start
+            )
+            spent, new_remaining = spend_cancel_token(
+                cancel_bucket,
+                DEFAULT_CONFIG.cancel_tokens_per_week,
+                period_start,
+                period_start,
+            )
+            run_query(
+                supabase.table(BUCKETS_TABLE).insert(
+                    {
+                        "walker_id": walker_id,
+                        "remaining": new_remaining,
+                        "period_start": now.isoformat(),
+                    }
+                )
+            )
+            return spent, new_remaining
+        read_remaining = bucket_rows[0]["remaining"]
         period_start = datetime.fromisoformat(bucket_rows[0]["period_start"]).timestamp()
         cancel_bucket = TokenBucket(
             DEFAULT_CONFIG.cancel_tokens_per_week, WEEK_SECONDS, period_start
         )
         spent, new_remaining = spend_cancel_token(
-            cancel_bucket, bucket_rows[0]["remaining"], period_start, now.timestamp()
+            cancel_bucket, read_remaining, period_start, now.timestamp()
         )
-        if spent:
-            run_query(
-                supabase.table(BUCKETS_TABLE)
-                .update({"remaining": new_remaining})
-                .eq("walker_id", walker_id)
-            )
-        return spent, new_remaining
-    period_start = now.timestamp()
-    cancel_bucket = TokenBucket(
-        DEFAULT_CONFIG.cancel_tokens_per_week, WEEK_SECONDS, period_start
-    )
-    spent, new_remaining = spend_cancel_token(
-        cancel_bucket,
-        DEFAULT_CONFIG.cancel_tokens_per_week,
-        period_start,
-        period_start,
-    )
-    run_query(
-        supabase.table(BUCKETS_TABLE).insert(
-            {
-                "walker_id": walker_id,
-                "remaining": new_remaining,
-                "period_start": now.isoformat(),
-            }
+        if not spent:
+            return spent, new_remaining
+        updated = run_query(
+            supabase.table(BUCKETS_TABLE)
+            .update({"remaining": new_remaining})
+            .eq("walker_id", walker_id)
+            .eq("remaining", read_remaining)
         )
+        if updated:
+            return spent, new_remaining
+    bucket_rows = run_query(
+        supabase.table(BUCKETS_TABLE).select("*").eq("walker_id", walker_id)
     )
-    return spent, new_remaining
+    remaining = bucket_rows[0]["remaining"] if bucket_rows else 0
+    return False, remaining
 
 
 def _assigned_request(supabase: Client, request_id: str, walker_id: str) -> dict[str, Any]:
@@ -1100,7 +1131,7 @@ def walker_cancel_request(
         request_id,
         walk_request,
         WalkEvent.WALKER_CANCEL,
-        {"status": "open"},
+        {"status": "open", "walker_id": None},
         None,
         now,
     )
@@ -1187,13 +1218,40 @@ def mark_no_show(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=NO_SHOW_TOO_EARLY_MESSAGE
         )
+    if walk_request.get("walker_id") is not None:
+        position_rows = run_query(
+            supabase.table(POSITIONS_TABLE)
+            .select("*")
+            .eq("walker_id", walk_request["walker_id"])
+        )
+        requested_at = datetime.fromisoformat(walk_request["requested_time"])
+        for position in position_rows:
+            try:
+                seen_at = datetime.fromisoformat(position["updated_at"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if seen_at < requested_at:
+                continue
+            if (
+                haversine_km(
+                    position["lat"],
+                    position["lng"],
+                    walk_request["pickup_lat"],
+                    walk_request["pickup_lng"],
+                )
+                <= 0.15
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=WALKER_AT_PICKUP_MESSAGE,
+                )
     _spend_walker_token(supabase, walk_request["walker_id"], now)
     return _apply_transition(
         supabase,
         request_id,
         walk_request,
         WalkEvent.NO_SHOW,
-        {"status": "open"},
+        {"status": "open", "walker_id": None},
         None,
         now,
     )

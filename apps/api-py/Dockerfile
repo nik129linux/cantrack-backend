@@ -15,5 +15,8 @@ RUN uv sync --frozen --no-dev
 # Bake the CLIP model (~89 MB) into the image so the first photo request is not a cold download.
 RUN mkdir -p /models && uv run python -c "from cantrack_ai.embeddings import ClipEmbedder; ClipEmbedder().ensure_model()"
 
+RUN useradd -m appuser && chown -R appuser /app /models
+USER appuser
+
 # Render injects PORT; cantrack_api.main reads it.
 CMD ["uv", "run", "--no-sync", "python", "-m", "cantrack_api.main"]

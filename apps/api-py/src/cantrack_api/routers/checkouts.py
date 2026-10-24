@@ -34,23 +34,26 @@ time order through the hand-written DoublyLinkedList (``to_array`` forward,
 Drafts never appear anywhere an owner can read.
 """
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from postgrest.exceptions import APIError
 from storage3.exceptions import StorageApiError
 from supabase import Client
 from supabase_auth.types import User
 
 from cantrack_ai.vision import OllamaVision
+from ..app import limiter
 from ..db import first_row, run_query
-from ..deps import get_current_user, get_now, get_supabase, get_vision
+from ..deps import current_role, get_current_user, get_now, get_supabase, get_vision
 from ..schemas import UpdateCheckoutNoteBody
 from ..structures import DoublyLinkedList
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 CHECKOUTS_TABLE = "checkouts"
 AI_USAGE_TABLE = "ai_usage"
@@ -94,7 +97,9 @@ PHOTOS_COUNT_MESSAGE = f"Between {MIN_PHOTOS} and {MAX_PHOTOS} photos are requir
 PHOTO_SIZE_MESSAGE = "Each photo must be 5 MiB or less."
 UNREADABLE_MESSAGE = "Unreadable image."
 UPLOAD_FAILED_MESSAGE = "Photo upload failed."
+PHOTO_READ_FAILED_MESSAGE = "We couldn't read the checkout photo. Please try again."
 IMMUTABLE_MESSAGE = "A sent checkout is immutable."
+STALE_MESSAGE = "This changed while you were acting on it. Reload and try again."
 NOTE_LEN_MESSAGE = f"The note must be {NOTE_MAX_CHARS} characters or less."
 QUOTA_MESSAGE = "Monthly AI limit reached."
 QUOTA_ROLE_MESSAGE = "Only walkers have an AI quota."
@@ -110,8 +115,8 @@ _WEBP_MAGIC = b"WEBP"
 
 
 def _role(user: User) -> str | None:
-    metadata = getattr(user, "user_metadata", None) or {}
-    return metadata.get("role")
+    """The server-assigned role (``deps.current_role``), never the client claim. O(1)."""
+    return current_role(user)
 
 
 def _image_kind(data: bytes) -> tuple[str, str] | None:
@@ -180,8 +185,10 @@ def _sign(bucket: Any, path: str) -> dict[str, Any]:
     try:
         signed = bucket.create_signed_url(path, SIGNED_URL_SECONDS)
     except (StorageApiError, APIError) as exc:
+        logger.exception("signing %s failed", path)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.message
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=PHOTO_READ_FAILED_MESSAGE,
         ) from exc
     return {"url": signed["signedURL"], "expiresIn": SIGNED_URL_SECONDS}
 
@@ -472,8 +479,10 @@ def create_checkout(
         raise
     except (StorageApiError, APIError) as exc:
         _rollback(bucket, paths)
+        logger.exception("checkout photo upload failed")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.message
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=UPLOAD_FAILED_MESSAGE,
         ) from exc
     except Exception as exc:
         _rollback(bucket, paths)
@@ -749,15 +758,18 @@ def update_checkout_note(
             status_code=status.HTTP_400_BAD_REQUEST, detail=NOTE_LEN_MESSAGE
         )
 
-    updated = first_row(
-        run_query(
-            supabase.table(CHECKOUTS_TABLE)
-            .update({"note": body.note})
-            .eq("id", checkout_id)
-            .eq("walker_id", user.id)
-        ),
-        NOT_FOUND_MESSAGE,
+    updated = run_query(
+        supabase.table(CHECKOUTS_TABLE)
+        .update({"note": body.note})
+        .eq("id", checkout_id)
+        .eq("walker_id", user.id)
+        .eq("status", "draft")
     )
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=STALE_MESSAGE
+        )
+    updated = updated[0]
     return _walker_view(
         updated,
         _dog_name(supabase, updated["dog_id"]),
@@ -799,12 +811,17 @@ def send_checkout(
         )
 
     sent_at = now.isoformat()
-    run_query(
+    updated = run_query(
         supabase.table(CHECKOUTS_TABLE)
         .update({"status": "sent", "sent_at": sent_at})
         .eq("id", checkout_id)
         .eq("walker_id", user.id)
+        .eq("status", "draft")
     )
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=STALE_MESSAGE
+        )
     return {
         "id": row["id"],
         "requestId": row["request_id"],
@@ -813,8 +830,20 @@ def send_checkout(
     }
 
 
+def _release_ai_reservation(supabase: Client, reservation_id: str) -> None:
+    """Give back a quota slot reserved for a model call that was not answered. O(1).
+
+    The ai-note re-run inserts its ``ai_usage`` row BEFORE calling the model
+    (insert-then-count), so parallel re-runs at the limit cannot all pass the
+    check; any path that ends without an answer deletes that row again.
+    """
+    run_query(supabase.table(AI_USAGE_TABLE).delete().eq("id", reservation_id))
+
+
 @router.post("/checkouts/{checkout_id}/ai-note")
+@limiter.limit("5/minute")
 def rerun_ai_note(
+    request: Request,
     checkout_id: str,
     user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase),
@@ -857,7 +886,16 @@ def rerun_ai_note(
             status_code=status.HTTP_400_BAD_REQUEST, detail=IMMUTABLE_MESSAGE
         )
 
-    if _ai_used_this_month(supabase, user.id, now) >= AI_LIMIT:
+    reservation = first_row(
+        run_query(
+            supabase.table(AI_USAGE_TABLE).insert(
+                {"walker_id": user.id, "used_at": now.isoformat()}
+            )
+        ),
+        NOT_FOUND_MESSAGE,
+    )
+    if _ai_used_this_month(supabase, user.id, now) > AI_LIMIT:
+        _release_ai_reservation(supabase, reservation["id"])
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=QUOTA_MESSAGE
         )
@@ -869,8 +907,11 @@ def rerun_ai_note(
         try:
             payload = bucket.download(paths[0])
         except (StorageApiError, APIError) as exc:
+            _release_ai_reservation(supabase, reservation["id"])
+            logger.exception("ai-note: reading %s failed", paths[0])
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=exc.message
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=PHOTO_READ_FAILED_MESSAGE,
             ) from exc
         try:
             analysis = vision.check(payload)
@@ -891,12 +932,12 @@ def rerun_ai_note(
         }
         if not walker_edited:
             patch["note"] = new_ai_note
-        answered = True
     else:
         # Nothing is destroyed: the last answered observation and the human
-        # note stay exactly as they were; only the status reflects the miss.
+        # note stay exactly as they were; only the status reflects the miss,
+        # and an unanswered call gives its quota slot back.
+        _release_ai_reservation(supabase, reservation["id"])
         patch = {"ai_status": "unavailable"}
-        answered = False
 
     updated = first_row(
         run_query(
@@ -907,8 +948,6 @@ def rerun_ai_note(
         ),
         NOT_FOUND_MESSAGE,
     )
-    if answered:
-        _record_ai_usage(supabase, user.id, now)
 
     return _walker_view(
         updated, _dog_name(supabase, updated["dog_id"]), _photos(bucket, updated)

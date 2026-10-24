@@ -13,7 +13,7 @@ from supabase import Client
 from supabase_auth.types import User
 
 from ..db import first_row, run_query
-from ..deps import get_current_user, get_supabase
+from ..deps import current_role, get_current_user, get_supabase
 from ..schemas import SaveWalkerProfileBody
 
 router = APIRouter()
@@ -24,9 +24,8 @@ SAVED_MESSAGE = "Walker profile not found."
 
 
 def _role(user: User) -> str | None:
-    """Read the role out of the Supabase user metadata (walker | owner)."""
-    metadata = getattr(user, "user_metadata", None) or {}
-    return metadata.get("role")
+    """The server-assigned role (``deps.current_role``), never the client claim. O(1)."""
+    return current_role(user)
 
 
 def _view(row: dict[str, Any]) -> dict[str, Any]:

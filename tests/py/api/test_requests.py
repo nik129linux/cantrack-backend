@@ -239,13 +239,15 @@ class TestCreate:
         assert res.json() == {"detail": "Only owners can create a walk request."}
         assert fake.tables.get("walk_requests", []) == []
 
-    def test_database_error_is_500_with_message(self, fake_client, fake):
+    def test_database_error_is_opaque_500(self, fake_client, fake):
         profile = save_profile(fake_client)
         dog = create_dog(fake_client)
         fake.fail_with = api_error()
         res = post_request(fake_client, profile["walkerId"], dog["id"])
         assert res.status_code == 500
-        assert res.json() == {"detail": "connection lost"}
+        # PR0: the database message never reaches the client (opaque 500 + errorId).
+        assert res.json()["detail"] == "Something went wrong on our side."
+        assert "connection lost" not in res.text
 
 
 class TestOwnerList:

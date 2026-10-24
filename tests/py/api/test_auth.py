@@ -72,11 +72,12 @@ class TestSignup:
         )
         assert res.status_code == 400
 
-    def test_supabase_error_becomes_400_with_its_message(self, client, supabase):
+    def test_supabase_error_becomes_a_generic_400(self, client, supabase):
+        # PR0: Supabase's own message would reveal that the email has an account.
         supabase.auth.sign_up.side_effect = auth_error("User already registered")
         res = client.post("/auth/signup", json=signup_body())
         assert res.status_code == 400
-        assert res.json() == {"detail": "User already registered"}
+        assert res.json() == {"detail": "We couldn't create an account with those details."}
 
 
 class TestLogin:
@@ -102,7 +103,7 @@ class TestLogin:
             "/auth/login", json={"email": "walker@example.com", "password": "wrong"}
         )
         assert res.status_code == 401
-        assert res.json() == {"detail": "Invalid login credentials"}
+        assert res.json() == {"detail": "Invalid login credentials."}
 
     def test_no_session_in_response_is_401(self, client, supabase):
         supabase.auth.sign_in_with_password.return_value = SimpleNamespace(
@@ -147,11 +148,13 @@ class TestResetPassword:
         assert res.status_code == 400
         supabase.auth.reset_password_for_email.assert_not_called()
 
-    def test_supabase_error_becomes_400(self, client, supabase):
+    def test_supabase_error_still_answers_sent(self, client, supabase):
+        # PR0: the same answer whether or not the email exists (no enumeration);
+        # the provider error only reaches the server log.
         supabase.auth.reset_password_for_email.side_effect = auth_error("rate limited")
         res = client.post("/auth/reset-password", json={"email": "walker@example.com"})
-        assert res.status_code == 400
-        assert res.json() == {"detail": "rate limited"}
+        assert res.status_code == 200
+        assert res.json() == {"message": "Password reset email sent."}
 
 
 class TestAuthGuard:

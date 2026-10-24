@@ -20,6 +20,9 @@ from cantrack_ai.vision import OllamaVision
 
 BEARER = "bearer"
 
+#: The only roles the API grants. Anything else in app_metadata is ignored.
+ROLES = frozenset({"owner", "walker"})
+
 MISSING_TOKEN_MESSAGE = "A bearer token is required."
 INVALID_TOKEN_MESSAGE = "Invalid authentication token."
 
@@ -157,3 +160,22 @@ def get_current_user(
         )
 
     return user
+
+def current_role(user: User) -> str | None:
+    """Return the caller's role as assigned by the server, or None. O(1).
+
+    Reads ``app_metadata.role`` only. ``user_metadata`` is writable by the user
+    themselves (``supabase.auth.updateUser({data: {role}})`` from the browser),
+    so a role read from there is a claim, not a fact. ``app_metadata`` can only
+    be written with the service-role key, which signup and ``POST /auth/role``
+    use.
+
+    Args:
+        user: The authenticated Supabase user.
+
+    Returns:
+        ``"owner"`` or ``"walker"``, or None when no valid role was assigned.
+    """
+    metadata = getattr(user, "app_metadata", None) or {}
+    role = metadata.get("role")
+    return role if role in ROLES else None

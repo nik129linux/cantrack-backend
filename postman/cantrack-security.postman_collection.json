@@ -1,0 +1,904 @@
+{
+  "info": {
+    "name": "CanTrack — Security exploits (PR0)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Every request is an attack a user can run with their own token. Each one must fail with the 4xx in its name. Run Setup first (it posts a walk and stores walkId), then Exploits. Fill ownerToken, otherOwnerToken, walkerToken, dogId (owned by the owner), otherDogId + otherDogName (a dog of the other owner). Set isProduction=true against Render."
+  },
+  "item": [
+    {
+      "name": "Setup",
+      "item": [
+        {
+          "name": "Post a walk request (owner) — stores walkId",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dogId\": \"{{dogId}}\",\n  \"windowStart\": \"{{windowStart}}\",\n  \"durationHours\": 1,\n  \"priceCop\": 25000,\n  \"pickupLat\": 1.2136,\n  \"pickupLng\": -77.2811\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 walk posted\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "pm.environment.set(\"walkId\", pm.response.json().id);"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A window 2 days ahead, always inside the 30-day limit.",
+                  "const start = new Date(Date.now() + 2 * 24 * 3600 * 1000);",
+                  "start.setUTCMinutes(0, 0, 0);",
+                  "pm.environment.set(\"windowStart\", start.toISOString().replace(\".000Z\", \"+00:00\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Exploits",
+      "item": [
+        {
+          "name": "E01 /_whoami (the professor's /me) is gone → 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/_whoami",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "_whoami"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"identity echo endpoint removed\", function () {",
+                  "    pm.response.to.have.status(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E02 no token → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/dogs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "dogs"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"guarded route needs a token\", function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E03 forged token → 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJIUzI1NiJ9.e30.forged"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/dogs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "dogs"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"forged JWT refused\", function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E04 owner calls a walker endpoint (bid on own walk) → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "offers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"priceCop\": 20000,\n  \"etaMin\": 5\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"role comes from the server, not the client\", function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E05 role cannot be re-picked → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/role",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "role"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"walker\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"role is set once, server-side\", function () {",
+                  "    pm.response.to.have.status(409);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E06 IDOR: another owner reads my offers → 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherOwnerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "offers"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"not your walk\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E07 IDOR: another owner picks on my walk → 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherOwnerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/pick",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "pick"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"offerId\": \"00000000-0000-0000-0000-000000000000\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"not your walk\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E08 IDOR: walker routes a stranger's dog → 403, name not leaked",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/routes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "routes"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stops\": [\n    {\n      \"dogId\": \"{{otherDogId}}\",\n      \"pickupTime\": \"{{windowStart}}\"\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"only dogs from walks assigned to you\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});",
+                  "pm.test(\"response leaks nothing internal\", function () {",
+                  "    const text = pm.response.text();",
+                  "    pm.expect(text).to.not.include(\"{{otherDogName}}\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E09 owner creates a route → 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/routes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "routes"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stops\": [\n    {\n      \"dogId\": \"{{dogId}}\",\n      \"pickupTime\": \"{{windowStart}}\"\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"routes are walker-only\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E10 walker creates a dog → 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/dogs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "dogs"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Fake\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"dogs are owner-only\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E11 int32 overflow price → 400 (was a 500 with Postgres text)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dogId\": \"{{dogId}}\",\n  \"windowStart\": \"{{windowStart}}\",\n  \"durationHours\": 1,\n  \"priceCop\": 2147483648,\n  \"pickupLat\": 1.2136,\n  \"pickupLng\": -77.2811\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"price capped at 1,000,000 COP\", function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test(\"response leaks nothing internal\", function () {",
+                  "    const text = pm.response.text();",
+                  "    pm.expect(text).to.not.include(\"out of range for type\");",
+                  "    pm.expect(text).to.not.include(\"postgres\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E12 Infinity ETA → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "offers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"priceCop\": 20000, \"etaMin\": Infinity}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"non-finite numbers refused\", function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E13 window in year 9999 → 400 (was a 500)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dogId\": \"{{dogId}}\",\n  \"windowStart\": \"9999-12-31T23:59:59+00:00\",\n  \"durationHours\": 1,\n  \"priceCop\": 25000,\n  \"pickupLat\": 1.2136,\n  \"pickupLng\": -77.2811\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"window must be within 30 days\", function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E14 non-UUID id → 404, no SQL text",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/not-a-uuid/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "not-a-uuid",
+                "offers"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"4xx, never 500\", function () { pm.expect(pm.response.code).to.be.within(400, 499); });",
+                  "pm.test(\"response leaks nothing internal\", function () {",
+                  "    const text = pm.response.text();",
+                  "    pm.expect(text).to.not.include(\"invalid input syntax\");",
+                  "    pm.expect(text).to.not.include(\"uuid\");",
+                  "    pm.expect(text).to.not.include(\"postgres\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E15 1.1 MB JSON body → 413",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/dogs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "dogs"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"{{bigName}}\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"body size capped\", function () {",
+                  "    pm.response.to.have.status(413);",
+                  "});",
+                  "pm.environment.unset(\"bigName\");"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set(\"bigName\", \"x\".repeat(1100000));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E16 validation errors don't reflect input (XSS probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"<script>alert(1)</script>\",\n  \"password\": \"x\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"invalid email refused\", function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test(\"response leaks nothing internal\", function () {",
+                  "    const text = pm.response.text();",
+                  "    pm.expect(text).to.not.include(\"<script>\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E17 login: unknown email and wrong password look identical",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"nobody-{{$randomUUID}}@example.com\",\n  \"password\": \"wrong-password\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"generic 401\", function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});",
+                  "pm.test(\"generic message\", function () {",
+                  "    pm.expect(pm.response.json().detail).to.eql(\"Invalid login credentials.\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E18 security headers on every response",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"health is public\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"HSTS + nosniff + DENY\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"Strict-Transport-Security\")).to.include(\"max-age=\");",
+                  "    pm.expect(pm.response.headers.get(\"X-Content-Type-Options\")).to.eql(\"nosniff\");",
+                  "    pm.expect(pm.response.headers.get(\"X-Frame-Options\")).to.eql(\"DENY\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E19 Swagger hidden in production",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openapi.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openapi.json"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404 in production, 200 in dev\", function () {",
+                  "    const prod = pm.environment.get(\"isProduction\") === \"true\";",
+                  "    pm.response.to.have.status(prod ? 404 : 200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E20 login flood → 429 on the 6th try",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"flood@example.com\",\n  \"password\": \"wrong-password\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const n = Number(pm.environment.get(\"floodCount\"));",
+                  "if (n < 6) {",
+                  "    pm.execution.setNextRequest(\"E20 login flood → 429 on the 6th try\");",
+                  "} else {",
+                  "    pm.environment.unset(\"floodCount\");",
+                  "    pm.test(\"6th login in a minute is rate-limited\", function () { pm.response.to.have.status(429); });",
+                  "    pm.test(\"Retry-After header\", function () { pm.expect(Number(pm.response.headers.get(\"Retry-After\"))).to.be.above(0); });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const n = Number(pm.environment.get(\"floodCount\") || 0) + 1;",
+                  "pm.environment.set(\"floodCount\", n);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
