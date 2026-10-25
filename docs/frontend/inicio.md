@@ -46,7 +46,7 @@ Example:
 - **Greeting:** `Hola, {greetingName}`.
 - **`activeWalk` present:** the walk is happening now. Show the live card ("Luna está paseando con Mateo · {minutesElapsed} min") and link it to Mis paseos → detail (live map). Poll `/home` every **20 s** while it is present, and stop when it is null.
 - **`activeWalk` null and `nextWalk` present:** the ticket ("Próximo paseo · Luna · Hoy, 5:00 pm · con Mateo").
-- **`walkerName` null:** write "Cuidador asignado".
+- **`walkerName` null:** write "Paseador asignado".
 - **`openRequests`:** chips "3 ofertas" that link to Explorar with that request open.
 - **Counts:** the small stats row.
 

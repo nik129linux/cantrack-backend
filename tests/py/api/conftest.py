@@ -87,6 +87,19 @@ def _reset_rate_limits():
     yield
 
 
+class PermissiveLoginGuard:
+    """A login guard that never locks (for the MagicMock-based auth tests)."""
+
+    def seconds_locked(self, email, now):
+        return 0
+
+    def record_failure(self, email, now):
+        return None
+
+    def record_success(self, email):
+        return None
+
+
 def make_session(token="token-abc", user=None) -> Session:
     return Session(
         access_token=token,
@@ -107,6 +120,14 @@ def app(supabase) -> FastAPI:
     application = create_app()
     application.dependency_overrides[get_supabase] = lambda: supabase
     application.dependency_overrides[get_auth_client] = lambda: supabase
+    # The MagicMock client cannot store login attempts; these legacy auth tests
+    # get a guard that never locks (the lockout itself runs on fake_client).
+    try:
+        from cantrack_api.login_guard import get_login_guard
+    except ImportError:
+        pass
+    else:
+        application.dependency_overrides[get_login_guard] = lambda: PermissiveLoginGuard()
 
     # The guard has no production route yet (dogs/routes come next), so the
     # suite mounts one probe route that depends on it.

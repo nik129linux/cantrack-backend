@@ -49,7 +49,7 @@ def _fuzz_app():
 schema = schemathesis.from_asgi("/openapi.json", app=_fuzz_app(), force_schema_version="30")
 
 
-ALLOWED = (200, 201, 400, 401, 403, 404, 405, 409, 413, 422, 429)
+ALLOWED = (200, 201, 204, 304, 400, 401, 403, 404, 405, 409, 413, 422, 429)
 
 
 def _assert_no_server_error(case, token):

@@ -21,7 +21,7 @@ type WalkItem = {
 ```
 
 - **Badges:** `canRate` → "Califica a Mateo"; `hasReport` → a "Reporte" chip.
-- **Status labels:** assigned "Programado", in_walk "En curso", done "Terminado", cancelled "Cancelado", expired "Sin cuidador".
+- **Status labels:** assigned "Programado", in_walk "En curso", done "Terminado", cancelled "Cancelado", expired "Sin paseador".
 
 ## 2. Detail: `GET /bidding/requests/{id}`
 
@@ -45,7 +45,7 @@ type WalkDetail = {
 | action | button (es) | call |
 |---|---|---|
 | cancel | Cancelar paseo | `POST /bidding/requests/{id}/owner-cancel` |
-| no_show | El cuidador no llegó | `POST /bidding/requests/{id}/no-show` (409 = the walker is at the door: "Mateo está en el punto de recogida; llámalo") |
+| no_show | El paseador no llegó | `POST /bidding/requests/{id}/no-show` (409 = the walker is at the door: "Mateo está en el punto de recogida; llámalo") |
 | track | Ver en vivo | live map below |
 | rate | Calificar | `POST /bidding/requests/{id}/ratings` `{rating: 1..5}` |
 | replay | Ver recorrido | `GET /bidding/requests/{id}/replay` |
@@ -59,7 +59,7 @@ type WalkDetail = {
 
 - Poll every **10 s**.
 - **409** "This walk is not in progress." → stop polling and refetch the detail (the walk ended).
-- `position` null → "Esperando la primera ubicación del cuidador".
+- `position` null → "Esperando la primera ubicación del paseador".
 - **Map tiles:** use Leaflet with OpenStreetMap.
 
 ## 4. Walker side (for the walker app, same endpoints)

@@ -30,8 +30,8 @@ form (dog, duration, start, fare, pickup)  ──POST /bidding/requests──▶
 **Durations:** `30 | 45 | 60 | 90 | 120` minutes. Anything else is a 400.
 
 **Nearby walkers:** `GET /bidding/nearby-walkers?lat=&lng=` → `{"count": 4, "radiusKm": 2}`.
-- Show "4 cuidadores cerca".
-- When it is 0, show "Ahora no hay cuidadores cerca; tu solicitud igual quedará publicada".
+- Show "4 paseadores cerca".
+- When it is 0, show "Ahora no hay paseadores cerca; tu solicitud igual quedará publicada".
 - The answer is only a count, so never draw walkers on the map from it.
 
 **Create:** `POST /bidding/requests`
@@ -81,7 +81,7 @@ type Offer = {
 
 **Pick:** `POST /bidding/requests/{id}/pick` with `{"offerId"}`.
 - 200 → go to Mis paseos.
-- 409 → "Otro cuidador ya fue asignado o la solicitud cambió", then refetch.
+- 409 → "Otro paseador ya fue asignado o la solicitud cambió", then refetch.
 
 **Deadline:** after `deadlineAt` with no pick, the best offer is auto-picked. With no offers the request expires: offer "Subir $2.000 y volver a publicar".
 

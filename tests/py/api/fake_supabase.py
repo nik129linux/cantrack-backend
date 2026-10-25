@@ -19,6 +19,7 @@ from typing import Any
 from postgrest.exceptions import APIError
 from storage3.exceptions import StorageApiError
 from supabase_auth.errors import AuthApiError
+from supabase_auth.types import Session, User
 
 # Postgres/PostgREST normalizes every timestamptz to UTC on the way back
 # (`2026-10-05T10:00:00-05:00` is stored and returned as
@@ -82,6 +83,9 @@ def _schema_columns() -> dict[str, set[str]]:
 
 
 SCHEMA_COLUMNS = _schema_columns()
+
+#: Natural primary keys the API relies on for conflict detection.
+PRIMARY_KEYS = {"auth_login_attempts": "email_hash"}
 
 
 class FakeQuery:
@@ -154,6 +158,10 @@ class FakeQuery:
                                 "code": "PGRST204", "hint": None, "details": None})
         rows = self._db.tables.setdefault(self._table, [])
         if self._op == "insert":
+            key = PRIMARY_KEYS.get(self._table)
+            if key and any(existing.get(key) == self._payload.get(key) for existing in rows):
+                raise APIError({"message": "duplicate key value violates unique constraint",
+                                "code": "23505", "hint": None, "details": None})
             row = {
                 "id": str(uuid.uuid4()),
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -265,8 +273,11 @@ class FakeStorage:
 class FakeAdmin:
     """Double of ``supabase.auth.admin``: the service-role user management API.
 
-    ``update_user_by_id(uid, attributes)`` merges ``app_metadata`` into the
-    stored user (the real call does the same server-side) and records the call.
+    ``update_user_by_id`` merges ``app_metadata`` (and sets a new ``password``)
+    the way the real call does server-side; ``sign_out`` revokes tokens with the
+    real scopes (local = this token, others = every other token of the user,
+    global = all of them); ``create_user``/``list_users``/``delete_user`` back
+    the demo seeding. Every call is recorded in ``calls``.
     """
 
     def __init__(self, auth: "FakeAuth") -> None:
@@ -278,27 +289,119 @@ class FakeAdmin:
         self.calls.append(("update", uid, attributes))
         if self.fail:
             raise AuthApiError("admin unavailable", 500, None)
-        for user in self._auth.users_by_token.values():
+        for user in self._auth.all_users():
             if user.id == uid:
-                merged = {**(user.app_metadata or {}), **attributes.get("app_metadata", {})}
-                user.app_metadata = merged
+                if "app_metadata" in attributes:
+                    user.app_metadata = {**(user.app_metadata or {}), **attributes["app_metadata"]}
+                if "password" in attributes:
+                    for account in self._auth.accounts.values():
+                        if account["user"].id == uid:
+                            account["password"] = attributes["password"]
+                    # Like GoTrue: a password change revokes EVERY session of
+                    # the user, the caller's own included.
+                    self._auth.users_by_token = {token: owner for token, owner in self._auth.users_by_token.items()
+                                                 if owner.id != uid}
                 return SimpleNamespace(user=user)
         raise AuthApiError("User not found", 404, None)
 
     def delete_user(self, uid: str) -> None:
         self.calls.append(("delete", uid, None))
+        self._auth.accounts = {email: acc for email, acc in self._auth.accounts.items()
+                               if acc["user"].id != uid}
+        self._auth.users_by_token = {token: user for token, user in self._auth.users_by_token.items()
+                                     if user.id != uid}
+
+    def sign_out(self, jwt: str, scope: str = "global") -> None:
+        self.calls.append(("sign_out", jwt, scope))
+        user = self._auth.users_by_token.get(jwt)
+        if user is None:
+            raise AuthApiError("invalid JWT", 401, None)
+        for token, owner in list(self._auth.users_by_token.items()):
+            if owner.id != user.id:
+                continue
+            if scope == "global" or (scope == "local" and token == jwt) or (scope == "others" and token != jwt):
+                del self._auth.users_by_token[token]
+
+    def create_user(self, attributes: dict[str, Any]) -> SimpleNamespace:
+        self.calls.append(("create", attributes.get("email"), attributes))
+        email = attributes["email"].lower()
+        if email in self._auth.accounts:
+            raise AuthApiError("A user with this email address has already been registered", 422, "email_exists")
+        user = User(
+            id=str(uuid.uuid4()), email=email,
+            app_metadata=dict(attributes.get("app_metadata") or {}),
+            user_metadata=dict(attributes.get("user_metadata") or {}),
+            aud="authenticated", created_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        self._auth.accounts[email] = {"password": attributes.get("password"), "user": user,
+                                      "confirmed": bool(attributes.get("email_confirm"))}
+        return SimpleNamespace(user=user)
+
+    def list_users(self, page: int = 1, per_page: int = 50) -> list[Any]:
+        users = [account["user"] for account in self._auth.accounts.values()]
+        start = (page - 1) * per_page
+        return users[start:start + per_page]
 
 
 class FakeAuth:
+    """Double of ``supabase.auth``: token lookup plus email/password accounts.
+
+    ``add_account`` registers a login; ``sign_in_with_password`` answers like
+    GoTrue (the password is checked BEFORE the confirmation, so
+    ``email_not_confirmed`` is only reachable with the right password).
+    """
+
     def __init__(self) -> None:
         self.users_by_token: dict[str, Any] = {}
+        self.accounts: dict[str, dict[str, Any]] = {}
+        self.refresh_tokens: dict[str, Any] = {}
+        self.resent: list[dict[str, Any]] = []
+        self.fail_resend = False
         self.admin = FakeAdmin(self)
+
+    def all_users(self) -> list[Any]:
+        seen = {user.id: user for user in self.users_by_token.values()}
+        for account in self.accounts.values():
+            seen.setdefault(account["user"].id, account["user"])
+        return list(seen.values())
+
+    def add_account(self, email: str, password: str, user: Any, confirmed: bool = True) -> None:
+        self.accounts[email.lower()] = {"password": password, "user": user, "confirmed": confirmed}
+
+    def _new_session(self, user: Any) -> Session:
+        access, refresh = f"at-{uuid.uuid4().hex}", f"rt-{uuid.uuid4().hex}"
+        self.users_by_token[access] = user
+        self.refresh_tokens[refresh] = user
+        return Session(access_token=access, refresh_token=refresh, expires_in=3600,
+                       token_type="bearer", user=user)
 
     def get_user(self, token: str) -> SimpleNamespace:
         user = self.users_by_token.get(token)
         if user is None:
             raise AuthApiError("invalid JWT", 401, None)
         return SimpleNamespace(user=user)
+
+    def sign_in_with_password(self, credentials: dict[str, Any]) -> SimpleNamespace:
+        account = self.accounts.get(credentials.get("email", "").lower())
+        if account is None or account["password"] != credentials.get("password"):
+            raise AuthApiError("Invalid login credentials", 400, "invalid_credentials")
+        if not account["confirmed"]:
+            raise AuthApiError("Email not confirmed", 400, "email_not_confirmed")
+        session = self._new_session(account["user"])
+        return SimpleNamespace(session=session, user=account["user"])
+
+    def refresh_session(self, refresh_token: str | None = None) -> SimpleNamespace:
+        user = self.refresh_tokens.pop(refresh_token or "", None)
+        if user is None:
+            raise AuthApiError("Invalid Refresh Token: Refresh Token Not Found", 400, "refresh_token_not_found")
+        session = self._new_session(user)
+        return SimpleNamespace(session=session, user=user)
+
+    def resend(self, credentials: dict[str, Any]) -> SimpleNamespace:
+        self.resent.append(credentials)
+        if self.fail_resend:
+            raise AuthApiError("Email rate limit exceeded", 429, "over_email_send_rate_limit")
+        return SimpleNamespace(user=None, session=None)
 
 
 class FakeSupabase:
@@ -316,6 +419,14 @@ class FakeSupabase:
 
     def add_user(self, token: str, user: Any) -> None:
         self.auth.users_by_token[token] = user
+
+    def add_account(self, email: str, password: str, user: Any, confirmed: bool = True) -> None:
+        """Register an email/password login (see ``FakeAuth.sign_in_with_password``)."""
+        self.auth.add_account(email, password, user, confirmed)
+
+    @property
+    def accounts(self) -> dict[str, dict[str, Any]]:
+        return self.auth.accounts
 
     def seed(self, table: str, **row: Any) -> dict[str, Any]:
         saved = {"id": str(uuid.uuid4()), **_normalize_timestamps(row)}

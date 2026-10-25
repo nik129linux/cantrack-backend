@@ -1,63 +1,116 @@
-# Frontend changes for PR0 (security foundation)
+# Frontend brief: accounts and sessions
 
-The backend now ignores any role the browser writes. Three things in the web app must change.
+Covers signup, email verification, login, Google, sessions, password change and sign-out.
+**This replaces the previous version, which said the email signup needed no change. It does.**
 
-## 1. OAuth signup: stop calling `updateUser`, call `POST /auth/role`
+## The rule
 
-`App.tsx` currently applies the role picked before a Google/Apple redirect with
-`supabase.auth.updateUser({ data: { role } })`. That writes `user_metadata`, which the API
-no longer reads (any user can write it, so it proves nothing).
+The browser never creates accounts or logs in **directly** against Supabase any more.
+- **Signup and login go through the API**, which assigns the role server-side and applies the lockout and the password policy. The app then hands the tokens to supabase-js so it can keep the session fresh.
+- **supabase-js is still used for:** keeping and refreshing the session, the Google redirect, and the password-recovery link.
 
-Replace the effect with one API call, made once, right after the first session arrives:
+Today `AuthScreens.tsx` calls `supabase.auth.signUp` and `supabase.auth.signInWithPassword` directly.
+- **Effect:** every new account is created **without a role**, so the API refuses it with 400/403.
+- **Fix:** replace both calls with the ones below.
 
-```ts
-// POST /auth/role  — bearer token required, rate-limited to 5/min
-// body:    { "role": "owner" | "walker" }
-// 200:     { "role": "owner" }                 -> role stored, reload the session
-// 409:     { "detail": "This account already has a role." }  -> ignore, already set
-// 400:     invalid role                         -> bug in our code, log it
-// 503:     auth provider down                   -> show the retry banner below
+## Signup: `POST /auth/signup`
+
+```json
+{"email": "camila@gmail.com", "password": "mi perro se llama luna", "role": "owner"}
 ```
 
-After a 200, call `supabase.auth.refreshSession()` so the new `app_metadata.role` is in the
-token, then clear `localStorage["cantrack.pendingRole"]`.
+- **201** → `{"user": {...}, "session": null}`. Email confirmation is on, so there is no session yet. Show the screen "Revisa tu correo: te enviamos un link para activar la cuenta", with a button "Reenviar link" (below).
+- **400 validation** → show `detail[].msg` under the field.
 
-The email/password signup needs no change: `POST /auth/signup` stores the role server-side.
+**Password rules** (NIST style, no "one capital and one number" rules):
 
-## 2. Read the role from `app_metadata`
-
-Wherever the app decides which shell to show, read `session.user.app_metadata.role`, not
-`user_metadata.role`. An account with no `app_metadata.role` is the OAuth case above: show the
-role picker, not the "no role" error.
-
-## 3. New error shapes
-
-| Status | Body | UI copy (es) |
-|---|---|---|
-| 400 validation | `{"detail": [{"loc": [...], "msg": "...", "type": "..."}]}` (no `input` any more) | field message from `msg` |
-| 401 | `{"detail": "Invalid login credentials."}` | "Correo o contraseña incorrectos." |
-| 404 | `{"detail": "We couldn't find what you're looking for."}` | "No encontramos lo que buscas." |
-| 409 | `{"detail": "This changed while you were acting on it. Reload and try again."}` | "Esto cambió mientras lo hacías. Recarga e inténtalo otra vez." |
-| 413 | `{"detail": "The request is too large."}` | "El archivo es demasiado grande." |
-| 429 | `{"detail": "Too many requests. Try again in a minute."}` + `Retry-After` header | "Vas muy rápido. Intenta en un minuto." (disable the button for `Retry-After` seconds) |
-| 500 | `{"detail": "Something went wrong on our side.", "errorId": "…"}` | "Algo falló de nuestro lado. Código: {errorId}" |
-| 503 | `{"detail": "..."}` | "El servicio no responde. Intenta de nuevo." |
-
-`api.ts` already strips the `body`/`query` prefix from `loc`; that keeps working.
-
-## Limits the forms should enforce too (the API rejects anything above)
-
-| Field | Max |
+| Rule | Message (es) |
 |---|---|
-| Dog name / breed | 80 |
-| Dog notes | 1000 |
-| Walker display name / bio / service area | 80 / 500 / 120 |
-| Walk price (`priceCop`) | 1,000,000 COP |
-| Offer ETA | 240 min |
-| Walk window start | within the next 30 days |
+| 10–128 characters | "Usa al menos 10 caracteres (una frase sirve)" |
+| not a common password | "Esa contraseña es muy común" |
+| does not contain your email's name | "No uses tu correo dentro de la contraseña" |
 
-## Never do
+Show the hint "Tip: una frase larga es más segura que una palabra rara" under the field.
 
-- Call Supabase tables from the browser. Every table is deny-all now: the call returns nothing.
-  Only `supabase.auth` (login, session, OAuth) is allowed in the web app.
-- Call `/_whoami`: it was removed. The user's id and email are already in the Supabase session.
+After signup, call `POST /owners/{id}/consent` once the user is logged in (Perfil brief).
+
+## Verification link
+
+The link in the email returns to `AUTH_EMAIL_REDIRECT_URL` (the web app, e.g. `https://<vercel-app>/verificado`). supabase-js picks the session up from the URL by itself. Show "¡Cuenta activada!" and continue to the app.
+
+**Resend:** `POST /auth/resend-verification` with `{"email"}` → always 200, `"If the account exists and is not verified, we sent a new link."`
+- Show "Si la cuenta existe, te enviamos un nuevo link".
+- Limit: 3 a minute.
+- Disable the button for 60 s after each tap.
+
+## Login: `POST /auth/login`
+
+```json
+{"email": "camila@gmail.com", "password": "mi perro se llama luna"}
+```
+
+| Status | Meaning | UI (es) |
+|---|---|---|
+| 200 | session: `{access_token, refresh_token, expires_in, user}` | `await supabase.auth.setSession({access_token, refresh_token})`, then into the app |
+| 401 | wrong email or password (same message for both) | "Correo o contraseña incorrectos." |
+| 403 | right password, email not verified yet | "Primero confirma tu correo." + button "Reenviar link" |
+| 429 | 5 failed attempts in 15 min (also `Retry-After` in seconds) | "Demasiados intentos. Intenta de nuevo en 15 minutos." Disable the form for `Retry-After` |
+
+After `setSession`, supabase-js refreshes the token by itself before it expires. If the app ever holds a stale refresh token, `POST /auth/refresh` with `{"refreshToken"}` answers a new session, or 401 "Invalid or expired session." (send the user to login).
+
+## Google
+
+Apple stays **hidden** (it needs a paid Apple developer account).
+
+1. `supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin } })`. Store the role picked on the screen in `localStorage["cantrack.pendingRole"]` before redirecting, as today.
+2. Back in the app with a session: if `session.user.app_metadata.role` is empty, call `POST /auth/role` with `{"role": pendingRole}` once.
+   - 200 → `supabase.auth.refreshSession()` so the token carries the role.
+   - 409 → it already had one; ignore.
+3. Never call `supabase.auth.updateUser({ data: { role } })`. The API ignores `user_metadata`.
+
+## Read the role
+
+Read it from `session.user.app_metadata.role` (`"owner"` / `"walker"`), never from `user_metadata`.
+
+In Spanish the walker is **"paseador"**, never "cuidador".
+
+## Change password (Perfil → Seguridad): `POST /auth/change-password`
+
+Bearer token, body `{"currentPassword", "newPassword"}`.
+
+| Status | UI (es) |
+|---|---|
+| 200 | `{message, session}`: Supabase closes EVERY session on a password change, this one included, so call `supabase.auth.setSession(session)` with the returned tokens right away. Show "Contraseña cambiada. Cerramos tu sesión en los otros dispositivos." |
+| 401 | "La contraseña actual no es correcta." (it counts toward the 5-attempt lockout) |
+| 400 | the rule that failed, or "Usa una contraseña distinta a la actual" |
+
+## Sign out: `POST /auth/logout`
+
+Bearer token.
+
+| Body | What it does | Button (es) |
+|---|---|---|
+| `{}` | this device | "Cerrar sesión" |
+| `{"scope": "global"}` | every device | "Cerrar sesión en todos los dispositivos" |
+
+Answers 204. Then call `supabase.auth.signOut({ scope: "local" })` and go to the welcome screen.
+
+## Forgot password
+
+Unchanged:
+- `POST /auth/reset-password` with `{"email"}` always answers the same message.
+- The emailed link opens the app with a recovery session.
+- Then call `supabase.auth.updateUser({ password })`. This is the one place `updateUser` is fine: it changes the password, not the role.
+
+## Errors (every endpoint)
+
+| Status | Body | UI (es) |
+|---|---|---|
+| 400 | `{"detail": [{"loc", "msg", "type"}]}` | message under the field |
+| 429 | `{"detail": "..."}` + `Retry-After` | wait that many seconds |
+| 5xx | `{"detail": "Something went wrong on our side.", "errorId"}` | "Algo falló de nuestro lado. Código: {errorId}" |
+
+## Never
+
+- Read or write Supabase tables from the browser. Every table is deny-all.
+- Keep tokens anywhere other than supabase-js's own storage.
