@@ -160,3 +160,21 @@ class TestCacheAndFailure:
     def test_weather_is_rate_limited_per_user(self, fake_client, source, morning):
         codes = [get_weather(fake_client).status_code for _ in range(31)]
         assert codes[-1] == 429
+
+
+class TestCacheIsBounded:
+    def test_looping_over_coordinates_cannot_grow_memory_forever(self, fake_client, source, morning):
+        for index in range(weather.MAX_CACHE_ENTRIES + 20):
+            weather.cache_put((index / 100, 0.0), forecast(), morning.now)
+        assert len(weather.WEATHER_CACHE) == weather.MAX_CACHE_ENTRIES
+
+    def test_the_oldest_cell_goes_first(self, fake_client, source, morning):
+        weather.cache_put((0.0, 0.0), forecast(), morning.now - timedelta(hours=1))
+        for index in range(1, weather.MAX_CACHE_ENTRIES + 1):
+            weather.cache_put((index / 100, 0.0), forecast(), morning.now)
+        assert (0.0, 0.0) not in weather.WEATHER_CACHE
+
+    def test_entries_past_six_hours_are_dropped(self, fake_client, source, morning):
+        weather.cache_put((9.0, 9.0), forecast(), morning.now - timedelta(hours=7))
+        weather.cache_put((1.0, 1.0), forecast(), morning.now)
+        assert (9.0, 9.0) not in weather.WEATHER_CACHE
