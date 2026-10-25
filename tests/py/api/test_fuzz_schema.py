@@ -14,7 +14,7 @@ from hypothesis import HealthCheck, settings
 from cantrack_api.app import create_app
 
 from .conftest import FIXED_NOW, make_user
-from .fake_ai import FakeEmbedder, FakeVision
+from .fake_ai import FakeEmbedder, FakeTextModel, FakeVision
 from .fake_supabase import FakeSupabase
 
 
@@ -28,6 +28,7 @@ def _fuzz_app():
         get_embedder,
         get_now,
         get_supabase,
+        get_text_model,
         get_vision,
     )
 
@@ -35,6 +36,9 @@ def _fuzz_app():
     app.dependency_overrides[get_auth_client] = lambda: fake
     app.dependency_overrides[get_embedder] = lambda: FakeEmbedder()
     app.dependency_overrides[get_vision] = lambda: FakeVision()
+    # An enabled text model, like the other AI fakes: without it the real client
+    # is disabled (no key) and the assistant answers its designed 503.
+    app.dependency_overrides[get_text_model] = lambda: FakeTextModel()
     app.dependency_overrides[get_now] = lambda: FIXED_NOW
     return app
 

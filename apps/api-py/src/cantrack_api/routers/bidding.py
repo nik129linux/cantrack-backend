@@ -16,10 +16,13 @@ trace answers with the fix recorded at a moment (binary search) or the last
 one recorded. No endpoint writes to the trace.
 """
 
+import hashlib
+import json
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel
 from supabase import Client
 from supabase_auth.types import User
 
@@ -31,6 +34,7 @@ from ..bidding import (
     WalkOffer,
     rank_offers,
     score_offers,
+    score_parts,
     spend_cancel_token,
 )
 from ..bidding_eligibility import (
@@ -40,8 +44,9 @@ from ..bidding_eligibility import (
     project_to_metres,
 )
 from ..db import first_row, run_query
-from ..deps import current_role, get_current_user, get_now, get_supabase
+from ..deps import current_role, get_current_user, get_now, get_supabase, get_text_model
 from ..geo import haversine_km
+from ..walk_report import build_and_store_walk_report
 from ..replay import (
     BACKWARD,
     FORWARD,
@@ -76,6 +81,7 @@ GRAPH_EDGES_TABLE = "walk_graph_edges"
 ROUTE_STOPS_TABLE = "walk_route_stops"
 OFFERS_TABLE = "walk_offers"
 RATINGS_TABLE = "walk_ratings"
+PROFILES_TABLE = "walker_profiles"
 BUCKETS_TABLE = "walker_cancel_buckets"
 TIMELINE_TABLE = "walk_timeline"
 GPS_POINTS_TABLE = "walk_gps_points"
@@ -118,6 +124,14 @@ BUSY_STATUSES = ["assigned", "in_walk"]
 
 #: Quadtree bounds in metres (the eligibility tests use the same).
 QUADTREE_BOUNDS = (-20_000_000.0, -20_000_000.0, 20_000_000.0, 20_000_000.0)
+
+
+class CheckOutResponse(BaseModel):
+    """The walk after a successful check-out."""
+
+    id: str
+    status: str
+    walkerId: str | None = None
 
 
 def _role(user: User) -> str | None:
@@ -216,8 +230,13 @@ def create_bidding_request(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=WINDOW_TOO_FAR_MESSAGE
         )
+    duration_hours = (
+        body.durationMinutes / 60.0
+        if body.durationMinutes is not None
+        else float(body.durationHours)
+    )
     try:
-        window_end = window_start + timedelta(hours=body.durationHours)
+        window_end = window_start + timedelta(hours=duration_hours)
     except OverflowError:
         # A timestamp near datetime.max cannot grow by the duration; that is
         # hostile input, not a server fault.
@@ -237,7 +256,7 @@ def create_bidding_request(
                 "deadline_at": (
                     now + timedelta(minutes=DEFAULT_CONFIG.auto_pick_after_min)
                 ).isoformat(),
-                "duration_hours": body.durationHours,
+                "duration_hours": duration_hours,
                 "pickup_lat": body.pickupLat,
                 "pickup_lng": body.pickupLng,
                 "price_cop": body.priceCop,
@@ -424,27 +443,45 @@ def _is_visible_to_walker(
 def _load_walk_offers(
     supabase: Client, request_id: str
 ) -> list[WalkOffer]:
-    """Build WalkOffer objects for every offer on a request, with reputation data. O(o · r)."""
+    """Build WalkOffer objects for every offer on a request, with reputation data.
+
+    The ratings and cancel buckets of every distinct walker are fetched with
+    one batched query each instead of one query per offer.
+
+    Big-O: O(o + r + b), where o is the offers on the request, r the ratings
+    of their walkers and b their bucket rows.
+    """
     offer_rows = run_query(
         supabase.table(OFFERS_TABLE).select("*").eq("walk_request_id", request_id)
     )
+    if not offer_rows:
+        return []
+
+    walker_ids = sorted({offer_row["walker_id"] for offer_row in offer_rows})
+    ratings_by_walker: dict[str, list[float]] = {}
+    for rating_row in run_query(
+        supabase.table(RATINGS_TABLE)
+        .select("*")
+        .in_("walker_id", walker_ids)
+        .order("created_at")
+    ):
+        ratings_by_walker.setdefault(rating_row["walker_id"], []).append(
+            rating_row["rating"]
+        )
+    empty_buckets = {
+        bucket_row["walker_id"]
+        for bucket_row in run_query(
+            supabase.table(BUCKETS_TABLE).select("*").in_("walker_id", walker_ids)
+        )
+        if bucket_row["remaining"] == 0
+    }
+
     walk_offers: list[WalkOffer] = []
     for offer_row in offer_rows:
         walker_id = offer_row["walker_id"]
-        rating_rows = run_query(
-            supabase.table(RATINGS_TABLE)
-            .select("*")
-            .eq("walker_id", walker_id)
-            .order("created_at")
-            .limit(DEFAULT_CONFIG.rating_window_size)
-        )
         rating_window: RatingWindow = RatingWindow(DEFAULT_CONFIG.rating_window_size)
-        for rating_row in rating_rows:
-            rating_window.add(rating_row["rating"])
-        bucket_rows = run_query(
-            supabase.table(BUCKETS_TABLE).select("*").eq("walker_id", walker_id)
-        )
-        bucket_empty = bool(bucket_rows) and bucket_rows[0]["remaining"] == 0
+        for rating in ratings_by_walker.get(walker_id, []):
+            rating_window.add(rating)
         walk_offers.append(
             WalkOffer(
                 offer_id=offer_row["id"],
@@ -452,7 +489,7 @@ def _load_walk_offers(
                 price_cop=offer_row["price_cop"],
                 distance_km=offer_row["distance_km"],
                 recent_rating=rating_window.recent_average(),
-                bucket_empty=bucket_empty,
+                bucket_empty=walker_id in empty_buckets,
                 created_at=datetime.fromisoformat(offer_row["created_at"]).timestamp(),
             )
         )
@@ -620,23 +657,33 @@ def send_offer(
 @router.get("/requests/{request_id}/offers")
 def list_offers(
     request_id: str,
+    request: Request,
+    response: Response,
     user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase),
-) -> list[dict[str, Any]]:
+) -> Any:
     """List the offers on a walk request, ranked best-first (owners only).
 
     Only the owning owner may read the offers; a foreign or unknown request
-    is a 403. Each offer carries the walker's score, recent rating (last-25
-    window) and all-time rating.
+    is a 403. Each offer carries the walker's display name, number of
+    ratings, distance, score, the normalised ``scoreParts`` behind that score
+    and the recent (last-25 window) and all-time ratings.
+
+    The body is hashed into a quoted ``ETag``; a matching ``If-None-Match``
+    answers 304 with an empty body so an owner polling for new bids transfers
+    nothing when nothing changed.
 
     Args:
         request_id: The walk request whose offers to list.
+        request: The incoming request, read for ``If-None-Match``.
+        response: The response whose ``ETag`` header is set.
         user: The authenticated owner.
         supabase: The Supabase client.
 
     Returns:
-        The ranked offers, each ``{offerId, walkerId, priceCop, etaMin, score,
-        recentRating, allTimeRating}``.
+        The ranked offers, each ``{offerId, walkerId, walkerName, priceCop,
+        etaMin, distanceKm, score, scoreParts, ratingCount, recentRating,
+        allTimeRating}``.
 
     Raises:
         HTTPException: 400 (not an owner), 403 (not the owner), 500 (database).
@@ -662,25 +709,64 @@ def list_offers(
     )
     walk_offers = _load_walk_offers(supabase, request_id)
     scores = score_offers(walk_offers)
+    parts = score_parts(walk_offers)
     ranked_ids = rank_offers(walk_offers)
+
+    walker_ids = sorted({offer.walker_id for offer in walk_offers})
+    profiles_by_walker: dict[str, dict[str, Any]] = {}
+    ratings_by_walker: dict[str, list[float]] = {}
+    if walker_ids:
+        for profile_row in run_query(
+            supabase.table(PROFILES_TABLE)
+            .select("*")
+            .in_("walker_id", walker_ids)
+        ):
+            profiles_by_walker[profile_row["walker_id"]] = profile_row
+        for rating_row in run_query(
+            supabase.table(RATINGS_TABLE)
+            .select("*")
+            .in_("walker_id", walker_ids)
+            .order("created_at")
+        ):
+            ratings_by_walker.setdefault(rating_row["walker_id"], []).append(
+                rating_row["rating"]
+            )
 
     offer_map = {offer.offer_id: offer for offer in walk_offers}
     ranked_offers: list[dict[str, Any]] = []
     for offer_id in ranked_ids:
         offer = offer_map[offer_id]
         offer_row = next(row for row in offer_rows if row["id"] == offer_id)
-        recent_rating, all_time_rating = _offer_ratings(supabase, offer.walker_id)
+        walker_ratings = ratings_by_walker.get(offer.walker_id, [])
+        rating_window: RatingWindow = RatingWindow(DEFAULT_CONFIG.rating_window_size)
+        for rating in walker_ratings:
+            rating_window.add(rating)
+        profile = profiles_by_walker.get(offer.walker_id) or {}
         ranked_offers.append(
             {
                 "offerId": offer_id,
                 "walkerId": offer.walker_id,
+                "walkerName": profile.get("display_name"),
                 "priceCop": offer_row["price_cop"],
                 "etaMin": offer_row["eta_min"],
+                "distanceKm": offer.distance_km,
                 "score": scores[offer_id],
-                "recentRating": recent_rating,
-                "allTimeRating": all_time_rating,
+                "scoreParts": parts[offer_id],
+                "ratingCount": len(walker_ratings),
+                "recentRating": rating_window.recent_average(),
+                "allTimeRating": rating_window.all_time_average(),
             }
         )
+
+    body = json.dumps(
+        ranked_offers, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+    etag = f'"{hashlib.sha256(body).hexdigest()}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(
+            status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag}
+        )
+    response.headers["ETag"] = etag
     return ranked_offers
 
 
@@ -1294,12 +1380,14 @@ def check_in_walk(
     )
 
 
-@router.post("/requests/{request_id}/check-out")
+@router.post("/requests/{request_id}/check-out", response_model=CheckOutResponse)
 def check_out_walk(
     request_id: str,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase),
     now: datetime = Depends(get_now),
+    text_model: Any = Depends(get_text_model),
 ) -> dict[str, Any]:
     """Finish the walk (the assigned walker only).
 
@@ -1320,7 +1408,7 @@ def check_out_walk(
             500 (database).
     """
     walk_request = _assigned_request(supabase, request_id, user.id)
-    return _apply_transition(
+    resolved = _apply_transition(
         supabase,
         request_id,
         walk_request,
@@ -1329,6 +1417,10 @@ def check_out_walk(
         "check_out",
         now,
     )
+    # The report (and its optional model call, up to the client's timeout) runs
+    # after the response is sent, so closing a walk never waits on the AI.
+    background_tasks.add_task(build_and_store_walk_report, supabase, request_id, now, text_model)
+    return resolved
 
 
 @router.post("/requests/{request_id}/ratings", status_code=status.HTTP_201_CREATED)

@@ -1,0 +1,620 @@
+{
+  "info": {
+    "name": "CanTrack — Owner mis-paseos",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Owner tab 'mis-paseos': Happy path then Exploits; every exploit must get the 4xx in its name. Environment: baseUrl, ownerToken, ownerId, otherOwnerToken, otherOwnerId, walkerToken, dogId, otherDogId, otherDogName."
+  },
+  "item": [
+    {
+      "name": "Happy path",
+      "item": [
+        {
+          "name": "Post a walk to inspect (stores walkId)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dogId\": \"{{dogId}}\",\n  \"windowStart\": \"{{windowStart}}\",\n  \"durationMinutes\": 60,\n  \"priceCop\": 15000,\n  \"pickupLat\": 1.2136,\n  \"pickupLng\": -77.2811\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", function () { pm.response.to.have.status(201); });",
+                  "pm.environment.set(\"walkId\", pm.response.json().id);"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const start = new Date(Date.now() + 2 * 24 * 3600 * 1000);",
+                  "start.setUTCMinutes(0, 0, 0);",
+                  "pm.environment.set(\"windowStart\", start.toISOString().replace(\".000Z\", \"+00:00\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Tab upcoming",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/walks?tab=upcoming",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "walks"
+              ],
+              "query": [
+                {
+                  "key": "tab",
+                  "value": "upcoming"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"items\", \"nextCursor\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Tab active",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/walks?tab=active",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "walks"
+              ],
+              "query": [
+                {
+                  "key": "tab",
+                  "value": "active"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"items\", \"nextCursor\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Tab past",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/walks?tab=past",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "walks"
+              ],
+              "query": [
+                {
+                  "key": "tab",
+                  "value": "past"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"items\", \"nextCursor\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Detail with allowed actions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"open walk offers pick and cancel\", function () { pm.expect(pm.response.json().allowedActions).to.eql([\"pick\", \"cancel\"]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Live map before the walk → 409",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/live",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "live"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"not in progress\", function () { pm.response.to.have.status(409); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Repeat a walk that is still open → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/repeat",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "repeat"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"windowStart\": \"{{windowStart}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"only finished walks\", function () { pm.response.to.have.status(409); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Clean up: cancel the walk",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/owner-cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "owner-cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"cancelled\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Exploits",
+      "item": [
+        {
+          "name": "IDOR: another owner opens my walk → 404 (not even its existence)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherOwnerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"hidden\", function () { pm.response.to.have.status(404); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A walker who is not assigned opens it → 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"hidden\", function () { pm.response.to.have.status(404); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "IDOR: another owner lists my walks → 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherOwnerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/walks?tab=past",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "walks"
+              ],
+              "query": [
+                {
+                  "key": "tab",
+                  "value": "past"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"path guard\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner injects GPS points → 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/gps",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "gps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"points\": [\n    {\n      \"lat\": 1.2,\n      \"lng\": -77.2,\n      \"atEpoch\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"assigned walker only\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unassigned walker injects GPS → 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/gps",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "gps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"points\": [\n    {\n      \"lat\": 1.2,\n      \"lng\": -77.2,\n      \"atEpoch\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"assigned walker only\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Another owner repeats my walk → 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherOwnerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/repeat",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "repeat"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"windowStart\": \"{{windowStart}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"not yours\", function () { pm.response.to.have.status(404); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown tab → 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/walks?tab=everything",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "walks"
+              ],
+              "query": [
+                {
+                  "key": "tab",
+                  "value": "everything"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"validated\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

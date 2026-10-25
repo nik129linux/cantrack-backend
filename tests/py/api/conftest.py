@@ -61,14 +61,13 @@ def make_spoofed_user(user_id, email, real_role, claimed_role) -> User:
     )
 
 
-@pytest.fixture(autouse=True)
-def _reset_rate_limits():
-    """Every test starts with empty rate-limit buckets (the limiter is global).
+def reset_all_rate_limits() -> None:
+    """Empty every rate-limit bucket of every limiter instance that exists.
 
     test_app reloads ``cantrack_api.app``, which builds a NEW module-level
     limiter while the routers keep the one they were decorated with; resetting
     only ``cantrack_api.app.limiter`` then leaves the routers' buckets full and
-    later tests get 429. So every distinct limiter any loaded module holds is reset.
+    later tests get 429. Tests that loop past a per-minute limit call this too.
     """
     import sys
 
@@ -79,6 +78,12 @@ def _reset_rate_limits():
     }
     for limiter in limiters.values():
         limiter.reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Every test starts with empty rate-limit buckets (the limiter is global)."""
+    reset_all_rate_limits()
     yield
 
 
