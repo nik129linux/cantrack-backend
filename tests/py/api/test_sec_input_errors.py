@@ -211,7 +211,7 @@ class TestAuthDoesNotRevealAccounts:
 
     def test_existing_email_on_signup_gets_a_generic_message(self, client, supabase):
         supabase.auth.sign_up.side_effect = AuthApiError("User already registered", 422, None)
-        res = client.post("/auth/signup", json={"email": "a@a.com", "password": "pw-123456", "role": "owner"})
+        res = client.post("/auth/signup", json={"email": "a@a.com", "password": "my dog runs fast", "role": "owner"})
         assert res.status_code == 400
         assert res.json() == SIGNUP_FAILED
 

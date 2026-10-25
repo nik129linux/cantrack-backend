@@ -39,13 +39,14 @@ def login(client, email="owner-a@example.com", password=GOOD):
 
 
 class TestPasswordPolicy:
-    def signup(self, client, password, email="new@example.com"):
+    def signup(self, client, password, email="camila@example.com"):
         return client.post("/auth/signup", json={"email": email, "password": password, "role": "owner"})
 
     @pytest.mark.parametrize("password", [
         "short1!",                    # under 10
+        "ninechars",                  # 9: still under 10
         "password123", "12345678910", "qwertyuiop", "cantrack2026",  # common
-        "newnewnew-2026",             # contains the email's local part
+        "camila-en-pasto-2026",       # contains the email's local part
         "x" * 129,                    # over 128
     ])
     def test_weak_passwords_are_refused(self, client, supabase, password):
@@ -59,6 +60,12 @@ class TestPasswordPolicy:
         user.model_dump.return_value = {"id": "u-1"}
         supabase.auth.sign_up.return_value = SimpleNamespace(user=user, session=None)
         assert self.signup(client, password).status_code == 201
+
+    def test_a_short_email_name_does_not_ban_every_password(self, client, supabase):
+        user = MagicMock(id="u-1")
+        user.model_dump.return_value = {"id": "u-1"}
+        supabase.auth.sign_up.return_value = SimpleNamespace(user=user, session=None)
+        assert self.signup(client, "my dog runs fast", email="o@example.com").status_code == 201
 
     def test_verification_link_returns_to_the_web_app(self, client, supabase, monkeypatch):
         monkeypatch.setenv("AUTH_EMAIL_REDIRECT_URL", "https://cantrack.vercel.app/verificado")
@@ -232,3 +239,47 @@ class TestLogout:
 
     def test_needs_a_session(self, fake_client):
         assert fake_client.post("/auth/logout", json={}).status_code == 401
+
+
+class TestLockoutUnderConcurrency:
+    """Exploit: fire the guesses in parallel so each request reads the same counter."""
+
+    def test_a_concurrent_failure_is_not_lost(self, fake_client, accounts):
+        for _ in range(3):
+            login(fake_client, password="nope nope nope")
+
+        def concurrent_failure(db):
+            db.tables["auth_login_attempts"][0]["failed_count"] += 1
+
+        accounts.before_execute[("auth_login_attempts", "update")] = concurrent_failure
+        login(fake_client, password="nope nope nope")  # 4th here + 1 concurrent = 5
+        assert login(fake_client).status_code == 429
+
+    def test_two_first_failures_at_once_do_not_crash(self, fake_client, accounts):
+        def concurrent_first_failure(db):
+            db.seed("auth_login_attempts", email_hash=hashlib.sha256(b"owner-a@example.com").hexdigest(),
+                    failed_count=1, first_failed_at=FIXED_NOW.isoformat(), locked_until=None,
+                    updated_at=FIXED_NOW.isoformat())
+
+        accounts.before_execute[("auth_login_attempts", "insert")] = concurrent_first_failure
+        res = login(fake_client, password="nope nope nope")
+        assert res.status_code == 401
+        rows = accounts.tables["auth_login_attempts"]
+        assert len(rows) == 1 and rows[0]["failed_count"] == 2
+
+
+class TestChangePasswordRespectsTheLockout:
+    def test_a_locked_account_cannot_keep_guessing_through_change_password(self, fake_client, accounts):
+        token = login(fake_client).json()["access_token"]
+        for _ in range(5):
+            login(fake_client, password="nope nope nope")
+        reset_all_rate_limits()
+        res = fake_client.post("/auth/change-password",
+                               json={"currentPassword": GOOD, "newPassword": "a brand new passphrase"},
+                               headers=bearer(token))
+        assert res.status_code == 429
+        assert accounts.accounts["owner-a@example.com"]["password"] == GOOD
+
+
+def test_logout_is_documented_in_openapi(fake_client):
+    assert "/auth/logout" in fake_client.get("/openapi.json").json()["paths"]

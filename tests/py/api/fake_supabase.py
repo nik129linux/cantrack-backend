@@ -84,6 +84,9 @@ def _schema_columns() -> dict[str, set[str]]:
 
 SCHEMA_COLUMNS = _schema_columns()
 
+#: Natural primary keys the API relies on for conflict detection.
+PRIMARY_KEYS = {"auth_login_attempts": "email_hash"}
+
 
 class FakeQuery:
     def __init__(self, db: "FakeSupabase", table: str) -> None:
@@ -155,6 +158,10 @@ class FakeQuery:
                                 "code": "PGRST204", "hint": None, "details": None})
         rows = self._db.tables.setdefault(self._table, [])
         if self._op == "insert":
+            key = PRIMARY_KEYS.get(self._table)
+            if key and any(existing.get(key) == self._payload.get(key) for existing in rows):
+                raise APIError({"message": "duplicate key value violates unique constraint",
+                                "code": "23505", "hint": None, "details": None})
             row = {
                 "id": str(uuid.uuid4()),
                 "created_at": datetime.now(timezone.utc).isoformat(),

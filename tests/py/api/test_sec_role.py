@@ -125,7 +125,7 @@ class TestSignupAssignsTheRoleServerSide:
 
     def test_signup_writes_app_metadata_through_the_admin_api(self, client, supabase):
         self._signed_up(supabase)
-        res = client.post("/auth/signup", json={"email": "o@example.com", "password": "pw-123456", "role": "owner"})
+        res = client.post("/auth/signup", json={"email": "o@example.com", "password": "my dog runs fast", "role": "owner"})
         assert res.status_code == 201
         supabase.auth.admin.update_user_by_id.assert_called_once_with(
             "new-user", {"app_metadata": {"role": "owner"}}
@@ -134,7 +134,7 @@ class TestSignupAssignsTheRoleServerSide:
     def test_signup_rolls_back_the_account_when_the_role_cannot_be_stored(self, client, supabase):
         self._signed_up(supabase)
         supabase.auth.admin.update_user_by_id.side_effect = AuthApiError("down", 500, None)
-        res = client.post("/auth/signup", json={"email": "o@example.com", "password": "pw-123456", "role": "owner"})
+        res = client.post("/auth/signup", json={"email": "o@example.com", "password": "my dog runs fast", "role": "owner"})
         assert res.status_code == 503
         assert res.json() == {"detail": "We couldn't finish creating your account. Please try again."}
         supabase.auth.admin.delete_user.assert_called_once_with("new-user")

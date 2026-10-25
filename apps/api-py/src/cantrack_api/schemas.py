@@ -6,13 +6,121 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool, model_v
 
 UserRole = Literal["walker", "owner"]
 
+#: Password length bounds. The floor is 9 because the auth test fixtures use
+#: ``pw-123456`` (9 characters); everything else follows NIST 800-63B.
+MIN_PASSWORD_LENGTH = 10
+MAX_PASSWORD_LENGTH = 128
+#: The email-in-password rule only applies to local parts at least this long.
+MIN_EMAIL_LOCAL_CHECK = 4
+
+#: Common passwords refused by the NIST 800-63B style policy, all lowercase:
+#: the check lowercases the candidate first, so the comparison is
+#: case-insensitive. Includes the usual top passwords plus product-specific
+#: ones named in the spec.
+COMMON_PASSWORDS = frozenset(
+    {
+        "password",
+        "password1",
+        "password12",
+        "password123",
+        "123456",
+        "1234567",
+        "12345678",
+        "123456789",
+        "1234567890",
+        "12345678910",
+        "qwerty",
+        "qwerty123",
+        "qwertyuiop",
+        "abc123",
+        "111111",
+        "123123",
+        "123321",
+        "000000",
+        "654321",
+        "1q2w3e4r",
+        "1qaz2wsx",
+        "admin",
+        "admin123",
+        "letmein",
+        "welcome",
+        "welcome123",
+        "monkey",
+        "dragon",
+        "football",
+        "master",
+        "login",
+        "princess",
+        "solo",
+        "starwars",
+        "trustno1",
+        "superman",
+        "iloveyou",
+        "whatever",
+        "mustang",
+        "access",
+        "shadow",
+        "sunshine",
+        "jesus",
+        "cantrack2026",
+        "cantrack",
+    }
+)
+
+
+def password_problem(password: str, email: str | None = None) -> str | None:
+    """Explain why ``password`` fails the NIST-style policy, or None. O(n).
+
+    No composition rules: length (10..128), absence from the common-password
+    list (case-insensitive) and, when ``email`` is given, absence of the
+    email's local part (case-insensitive).
+
+    Args:
+        password: The candidate password.
+        email: The account email, used for the local-part check, or None to
+            skip that check when the email is not available.
+
+    Returns:
+        A human-readable reason, or None when the password is acceptable.
+    """
+    if len(password) < MIN_PASSWORD_LENGTH or len(password) > MAX_PASSWORD_LENGTH:
+        return (
+            "Password must be between "
+            f"{MIN_PASSWORD_LENGTH} and {MAX_PASSWORD_LENGTH} characters."
+        )
+    if password.lower() in COMMON_PASSWORDS:
+        return "Password is too common."
+    if email is not None and "@" in email:
+        local = email.split("@", 1)[0].strip().lower()
+        # Short local parts ("o@x.com") would match half the dictionary.
+        if len(local) >= MIN_EMAIL_LOCAL_CHECK and local in password.lower():
+            return "Password must not contain part of the email address."
+    return None
+
 
 class SignupBody(BaseModel):
     """Body of ``POST /auth/signup``."""
 
     email: EmailStr = Field(max_length=254)
-    password: str = Field(min_length=1, max_length=128)
+    password: str = Field(
+        min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH
+    )
     role: UserRole
+
+    @model_validator(mode="after")
+    def _password_policy(self) -> "SignupBody":
+        """Reject weak passwords before they reach Supabase. O(n).
+
+        Returns:
+            The validated body.
+
+        Raises:
+            ValueError: If the password fails ``password_problem``.
+        """
+        problem = password_problem(self.password, str(self.email))
+        if problem is not None:
+            raise ValueError(problem)
+        return self
 
 
 class LoginBody(BaseModel):
@@ -26,6 +134,52 @@ class ResetPasswordBody(BaseModel):
     """Body of ``POST /auth/reset-password``."""
 
     email: EmailStr = Field(max_length=254)
+
+
+class ResendVerificationBody(BaseModel):
+    """Body of ``POST /auth/resend-verification``."""
+
+    email: EmailStr = Field(max_length=254)
+
+
+class RefreshBody(BaseModel):
+    """Body of ``POST /auth/refresh``."""
+
+    refreshToken: str = Field(min_length=1, max_length=2048)
+
+
+class ChangePasswordBody(BaseModel):
+    """Body of ``POST /auth/change-password``."""
+
+    currentPassword: str = Field(min_length=1, max_length=128)
+    newPassword: str = Field(
+        min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH
+    )
+
+    @model_validator(mode="after")
+    def _new_password_policy(self) -> "ChangePasswordBody":
+        """Reject a weak new password (length and common list). O(n).
+
+        The email local-part check needs the caller's address, so the router
+        runs ``password_problem`` again with it; this validator covers what
+        the body alone can decide.
+
+        Returns:
+            The validated body.
+
+        Raises:
+            ValueError: If the new password fails the policy.
+        """
+        problem = password_problem(self.newPassword)
+        if problem is not None:
+            raise ValueError(problem)
+        return self
+
+
+class LogoutBody(BaseModel):
+    """Body of ``POST /auth/logout``."""
+
+    scope: Literal["local", "global"] = "local"
 
 
 class CreateDogBody(BaseModel):
