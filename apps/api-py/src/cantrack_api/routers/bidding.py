@@ -19,7 +19,7 @@ one recorded. No endpoint writes to the trace.
 import hashlib
 import json
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
@@ -46,6 +46,7 @@ from ..bidding_eligibility import (
 from ..db import first_row, run_query
 from ..deps import current_role, get_current_user, get_now, get_supabase, get_text_model
 from ..geo import haversine_km
+from ..walker_access import is_online
 from ..walk_report import build_and_store_walk_report
 from ..replay import (
     BACKWARD,
@@ -82,6 +83,7 @@ ROUTE_STOPS_TABLE = "walk_route_stops"
 OFFERS_TABLE = "walk_offers"
 RATINGS_TABLE = "walk_ratings"
 PROFILES_TABLE = "walker_profiles"
+OWNER_PROFILES_TABLE = "owner_profiles"
 BUCKETS_TABLE = "walker_cancel_buckets"
 TIMELINE_TABLE = "walk_timeline"
 GPS_POINTS_TABLE = "walk_gps_points"
@@ -108,6 +110,12 @@ AUTO_PICK_OWNER_MESSAGE = "Only owners can run an auto-pick."
 WALK_NO_LONGER_OPEN_MESSAGE = "Walk no longer open."
 DEADLINE_NOT_PASSED_MESSAGE = "Deadline has not passed yet."
 OFFER_NOT_FOUND_MESSAGE = "Offer not found."
+OFFLINE_MESSAGE = "Go online to send offers."
+ACCEPT_PRICE_MESSAGE = "An accept takes the owner's fare."
+COUNTER_PRICE_MESSAGE = "Counter price must be a multiple of 1000, at least 8000 and at most twice the fare."
+COUNTER_STEP_COP = 1000
+MIN_COUNTER_COP = 8000
+COUNTER_FARE_MULTIPLIER = 2
 TRANSITION_MESSAGE = "That transition is not allowed from the current state."
 NO_TOKENS_MESSAGE = "No cancellation tokens left."
 NO_SHOW_TOO_EARLY_MESSAGE = "Too early to mark a no-show."
@@ -132,6 +140,43 @@ class CheckOutResponse(BaseModel):
     id: str
     status: str
     walkerId: str | None = None
+
+
+class OfferSummaryView(BaseModel):
+    """The caller's own offer as it appears on an open-request card."""
+
+    id: str
+    priceCop: int
+    kind: Literal["accept", "counter"]
+
+
+class OpenRequestCardView(BaseModel):
+    """An open walk request as the walker's InDrive-style inbox shows it."""
+
+    id: str
+    status: str
+    dogId: str
+    requestedTime: str
+    windowEnd: str
+    durationHours: float
+    priceCop: int
+    pickupLat: float
+    pickupLng: float
+    deadlineAt: str
+    dogName: str | None = None
+    ownerName: str | None = None
+    fareCop: int
+    distanceKm: float
+    myOffer: OfferSummaryView | None = None
+
+
+class SentOfferView(BaseModel):
+    """A just-sent offer: its id, score, price and the derived kind."""
+
+    id: str
+    score: float
+    priceCop: int
+    kind: Literal["accept", "counter"]
 
 
 def _role(user: User) -> str | None:
@@ -173,6 +218,86 @@ def _open_view(row: dict[str, Any]) -> dict[str, Any]:
         "pickupLng": row["pickup_lng"],
         "deadlineAt": row["deadline_at"],
     }
+
+
+def _offer_kind(price_cop: int, fare_cop: int) -> Literal["accept", "counter"]:
+    """An offer's kind derived from its price: matching the fare IS an accept. O(1)."""
+    return "accept" if price_cop == fare_cop else "counter"
+
+
+def _request_cards(
+    supabase: Client,
+    rows: list[dict[str, Any]],
+    walker_id: str,
+    position: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build the inbox cards for ``rows`` with batched lookups.
+
+    Dog names, owner display names and the caller's own offers are fetched with
+    one ``.in_`` query each instead of one query per request.
+
+    Big-O: O(n + d + p + o), where n is the requests, d their dogs, p their
+    owners and o the caller's offers on them.
+    """
+    if not rows:
+        return []
+    request_ids = [row["id"] for row in rows]
+    dog_ids = sorted({row["dog_id"] for row in rows})
+    owner_ids = sorted({row["owner_id"] for row in rows})
+
+    dog_names = {
+        dog["id"]: dog.get("name")
+        for dog in run_query(
+            supabase.table(DOGS_TABLE).select("*").in_("id", dog_ids)
+        )
+    }
+    owner_names = {
+        profile["owner_id"]: profile.get("display_name")
+        for profile in run_query(
+            supabase.table(OWNER_PROFILES_TABLE)
+            .select("*")
+            .in_("owner_id", owner_ids)
+        )
+    }
+    my_offers: dict[str, dict[str, Any]] = {}
+    for offer in run_query(
+        supabase.table(OFFERS_TABLE)
+        .select("*")
+        .in_("walk_request_id", request_ids)
+        .eq("walker_id", walker_id)
+    ):
+        my_offers.setdefault(offer["walk_request_id"], offer)
+
+    cards: list[dict[str, Any]] = []
+    for row in rows:
+        fare_cop = row["price_cop"]
+        offer = my_offers.get(row["id"])
+        card = _open_view(row)
+        card.update(
+            {
+                "dogName": dog_names.get(row["dog_id"]),
+                "ownerName": owner_names.get(row["owner_id"]),
+                "fareCop": fare_cop,
+                "distanceKm": round(
+                    haversine_km(
+                        position["lat"],
+                        position["lng"],
+                        row["pickup_lat"],
+                        row["pickup_lng"],
+                    ),
+                    1,
+                ),
+                "myOffer": None
+                if offer is None
+                else {
+                    "id": offer["id"],
+                    "priceCop": offer["price_cop"],
+                    "kind": _offer_kind(offer["price_cop"], fare_cop),
+                },
+            }
+        )
+        cards.append(card)
+    return cards
 
 
 @router.post("/requests", status_code=status.HTTP_201_CREATED)
@@ -267,7 +392,7 @@ def create_bidding_request(
     return _open_view(created)
 
 
-@router.get("/requests/open")
+@router.get("/requests/open", response_model=list[OpenRequestCardView])
 def list_open_requests(
     user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase),
@@ -305,7 +430,8 @@ def list_open_requests(
     my_positions = run_query(
         supabase.table(POSITIONS_TABLE).select("*").eq("walker_id", user.id)
     )
-    if not my_positions:
+    my_position = my_positions[0] if my_positions else None
+    if not is_online(my_position, now):
         return []
 
     walk_requests = run_query(
@@ -374,7 +500,7 @@ def list_open_requests(
         if is_free_in_window(
             busy_windows, walk_request["requested_time"], walk_request["window_end"]
         ):
-            visible.append(_open_view(walk_request))
+            visible.append(walk_request)
             continue
         if is_busy_eligible(
             pack=pack,
@@ -387,8 +513,8 @@ def list_open_requests(
             dog_count=len(current_dog_ids),
             capacity=DEFAULT_CONFIG.walker_capacity,
         ):
-            visible.append(_open_view(walk_request))
-    return visible
+            visible.append(walk_request)
+    return _request_cards(supabase, visible, user.id, my_position)
 
 
 def _is_visible_to_walker(
@@ -512,7 +638,11 @@ def _offer_ratings(
     return rating_window.recent_average(), rating_window.all_time_average()
 
 
-@router.post("/requests/{request_id}/offers", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/requests/{request_id}/offers",
+    status_code=status.HTTP_201_CREATED,
+    response_model=SentOfferView,
+)
 @limiter.limit("10/minute")
 def send_offer(
     request: Request,
@@ -524,24 +654,29 @@ def send_offer(
 ) -> dict[str, Any]:
     """Send an offer on an open walk request (walkers only).
 
-    The request must be ``open`` and visible to the caller — within the bidding
-    radius, deadline not passed, and either free or busy-eligible. One offer per
-    walker per request. The distance is the haversine from the walker's stored
-    position to the pickup.
+    The caller must be online (a fresh ``walker_positions`` heartbeat) and the
+    request must be ``open`` and visible to them — within the bidding radius,
+    deadline not passed, and either free or busy-eligible. One offer per walker
+    per request. ``kind="accept"`` takes the owner's fare; ``kind="counter"``
+    (the default) carries a price that is a multiple of 1000, at least 8000 and
+    at most twice the fare. The kind is derived from the stored price, so an
+    offer equal to the fare is always an accept. The distance is the haversine
+    from the walker's stored position to the pickup.
 
     Args:
         request_id: The walk request to bid on.
-        body: The bid's price and ETA.
+        body: The offer's kind, price and ETA.
         user: The authenticated walker.
         supabase: The Supabase client.
         now: The current time (dependency, frozen in tests).
 
     Returns:
-        ``{id, score}`` — the new offer's id and its score among all offers.
+        ``{id, score, priceCop, kind}`` for the new offer.
 
     Raises:
-        HTTPException: 400 (not a walker), 404 (unknown request), 403 (not open
-            or not visible), 409 (already offered), 500 (database).
+        HTTPException: 400 (not a walker, bad kind or counter price), 404
+            (unknown request), 403 (not open or not visible), 409 (offline,
+            already offered), 500 (database).
     """
     if _role(user) != "walker":
         raise HTTPException(
@@ -561,6 +696,15 @@ def send_offer(
     if walk_request["status"] != "open":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=WALK_NOT_VISIBLE_MESSAGE
+        )
+
+    my_positions = run_query(
+        supabase.table(POSITIONS_TABLE).select("*").eq("walker_id", user.id)
+    )
+    walker_position = my_positions[0] if my_positions else None
+    if not is_online(walker_position, now):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=OFFLINE_MESSAGE
         )
 
     position_rows = run_query(supabase.table(POSITIONS_TABLE).select("*"))
@@ -620,14 +764,26 @@ def send_offer(
             status_code=status.HTTP_409_CONFLICT, detail=WALKER_ALREADY_OFFERED_MESSAGE
         )
 
-    walker_position = first_row(
-        run_query(
-            supabase.table(POSITIONS_TABLE)
-            .select("*")
-            .eq("walker_id", user.id)
-        ),
-        WALK_NOT_VISIBLE_MESSAGE,
-    )
+    fare_cop = walk_request["price_cop"]
+    requested_kind = body.kind or "counter"
+    if requested_kind == "accept":
+        if body.priceCop is not None and body.priceCop != fare_cop:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=ACCEPT_PRICE_MESSAGE
+            )
+        price_cop = fare_cop
+    else:
+        if body.priceCop is None or (
+            body.priceCop % COUNTER_STEP_COP != 0
+            or body.priceCop < MIN_COUNTER_COP
+            or body.priceCop > COUNTER_FARE_MULTIPLIER * fare_cop
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=COUNTER_PRICE_MESSAGE
+            )
+        price_cop = body.priceCop
+    kind = _offer_kind(price_cop, fare_cop)
+
     distance_km = haversine_km(
         walker_position["lat"],
         walker_position["lng"],
@@ -640,7 +796,7 @@ def send_offer(
             {
                 "walk_request_id": request_id,
                 "walker_id": user.id,
-                "price_cop": body.priceCop,
+                "price_cop": price_cop,
                 "eta_min": body.etaMin,
                 "distance_km": distance_km,
                 "created_at": now.isoformat(),
@@ -651,7 +807,12 @@ def send_offer(
 
     walk_offers = _load_walk_offers(supabase, request_id)
     scores = score_offers(walk_offers)
-    return {"id": created["id"], "score": scores[created["id"]]}
+    return {
+        "id": created["id"],
+        "score": scores[created["id"]],
+        "priceCop": price_cop,
+        "kind": kind,
+    }
 
 
 @router.get("/requests/{request_id}/offers")

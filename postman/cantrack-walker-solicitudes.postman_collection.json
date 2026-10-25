@@ -1,0 +1,870 @@
+{
+  "info": {
+    "name": "CanTrack — Walker Solicitudes",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Walker tab 'solicitudes': Happy path then Exploits; every exploit must get the 4xx in its name. Environment: baseUrl, walkerToken, walkerId, otherWalkerToken, otherWalkerId, ownerToken, ownerId, dogId. Run top to bottom: later requests use ids the earlier ones store."
+  },
+  "item": [
+    {
+      "name": "Happy path",
+      "item": [
+        {
+          "name": "Owner posts an open request (setup)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"dogId\": \"{{dogId}}\", \"windowStart\": \"{{windowStart}}\", \"durationMinutes\": 45, \"priceCop\": 20000, \"pickupLat\": 1.2136, \"pickupLng\": -77.2811}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const start = new Date(Date.now() + 26 * 3600 * 1000); start.setUTCMinutes(0, 0, 0);",
+                  "pm.environment.set('windowStart', start.toISOString().replace('.000Z', '+00:00'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", function () { pm.response.to.have.status(201); });",
+                  "pm.environment.set(\"requestId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Go online (setup)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"online\": true, \"lat\": 1.214, \"lng\": -77.2811}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Inbox shows the request with its card",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/open",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "open"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"card\", function () { const c = pm.response.json().find(r => r.id === pm.environment.get(\"requestId\")); pm.expect(c).to.include.keys(\"dogName\", \"ownerName\", \"fareCop\", \"distanceKm\", \"myOffer\"); pm.expect(c.myOffer).to.eql(null); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Accept the owner's fare in one tap",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "offers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"kind\": \"accept\", \"etaMin\": 8}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", function () { pm.response.to.have.status(201); });",
+                  "pm.test(\"accept at the fare\", function () { const b = pm.response.json(); pm.expect(b.kind).to.eql(\"accept\"); pm.expect(b.priceCop).to.eql(20000); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My offers: pending",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/offers?status=pending",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "offers"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "pending"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"listed\", function () { pm.expect(pm.response.json().map(o => o.requestId)).to.include(pm.environment.get(\"requestId\")); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Withdraw my offer",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/offers/mine",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "offers",
+                "mine"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"204\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Counter-offer +2000",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "offers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"kind\": \"counter\", \"priceCop\": 22000, \"etaMin\": 8}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", function () { pm.response.to.have.status(201); });",
+                  "pm.test(\"counter\", function () { pm.expect(pm.response.json().kind).to.eql(\"counter\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner sees the counter in the ranked list",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "offers"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Exploits",
+      "item": [
+        {
+          "name": "Second walker goes online (setup)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherWalkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{otherWalkerId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{otherWalkerId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"online\": true, \"lat\": 1.214, \"lng\": -77.2811}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Counter below the 8000 floor → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherWalkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "offers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"kind\": \"counter\", \"priceCop\": 7000, \"etaMin\": 8}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Counter not a multiple of 1000 → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherWalkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "offers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"kind\": \"counter\", \"priceCop\": 22500, \"etaMin\": 8}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Counter above twice the fare → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherWalkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "offers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"kind\": \"counter\", \"priceCop\": 41000, \"etaMin\": 8}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Accept with a smuggled price → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherWalkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "offers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"kind\": \"accept\", \"priceCop\": 60000, \"etaMin\": 8}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Second walker goes offline (setup)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherWalkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{otherWalkerId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{otherWalkerId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"online\": false}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Offline walker bids → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherWalkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "offers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"kind\": \"accept\", \"etaMin\": 8}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409\", function () { pm.response.to.have.status(409); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Withdraw someone else's offer (I have none) → 404",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherWalkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/offers/mine",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "offers",
+                "mine"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404\", function () { pm.response.to.have.status(404); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner withdraws a walker offer → 403",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/offers/mine",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "offers",
+                "mine"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "IDOR: another walker's offers → 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherWalkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "offers"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Offers with a made-up status → 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/offers?status=maybe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "offers"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "maybe"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner cancels the request (cleanup)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/owner-cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "owner-cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Go offline (cleanup)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"online\": false}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
