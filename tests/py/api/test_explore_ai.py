@@ -10,7 +10,7 @@ from datetime import timedelta
 
 import pytest
 
-from .conftest import FIXED_NOW, bearer
+from .conftest import FIXED_NOW, bearer, reset_all_rate_limits
 
 UNAVAILABLE = {"detail": "The assistant is not available. Fill in the form."}
 QUOTA = {"detail": "Daily assistant limit reached."}
@@ -99,19 +99,17 @@ class TestDegradation:
 
 class TestQuotaAndAbuse:
     def test_ten_answered_parses_a_day_then_429(self, fake_client, dogs, text_model, fake_clock):
-        from cantrack_api.app import limiter
-
         text_model.result = {"dogName": "Luna"}
         responses = []
         for _ in range(11):
-            limiter.reset()  # this test is about the daily quota, not the per-minute limit
+            reset_all_rate_limits()  # this test is about the daily quota, not the per-minute limit
             responses.append(parse(fake_client))
         assert [res.status_code for res in responses[:10]] == [200] * 10
         assert responses[10].status_code == 429
         assert responses[10].json() == QUOTA
         assert len(dogs.tables["owner_ai_usage"]) == 10  # the refused call gave its slot back
         fake_clock.now = FIXED_NOW + timedelta(days=1)
-        limiter.reset()
+        reset_all_rate_limits()
         assert parse(fake_client).status_code == 200
 
     def test_quota_is_reserved_before_the_model_is_called(self, fake_client, dogs, text_model):

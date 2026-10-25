@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool, model_validator
 
 UserRole = Literal["walker", "owner"]
 
@@ -216,14 +216,26 @@ class CreateBiddingRequestBody(BaseModel):
     it stays a plain string here (no min_length on purpose, exactly like
     ``CreateRequestBody.requestedTime``). The price is the owner's asking
     price in COP; the bids walkers send later decide who wins.
+
+    The duration arrives either as ``durationMinutes`` (the five offered
+    lengths) or as ``durationHours``, and exactly one of the two is required:
+    a body with both or with neither is rejected before the router runs.
     """
 
     dogId: str = Field(min_length=1, max_length=64)
     windowStart: str
-    durationHours: float = Field(gt=0, le=12)
+    durationMinutes: Literal[30, 45, 60, 90, 120] | None = None
+    durationHours: float | None = Field(default=None, gt=0, le=12)
     priceCop: int = Field(ge=0, le=1_000_000)
     pickupLat: float = Field(ge=-90, le=90, allow_inf_nan=False)
     pickupLng: float = Field(ge=-180, le=180, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _exactly_one_duration(self) -> "CreateBiddingRequestBody":
+        """Require exactly one of ``durationMinutes``/``durationHours``. O(1)."""
+        if (self.durationMinutes is None) == (self.durationHours is None):
+            raise ValueError("Provide exactly one of durationMinutes or durationHours.")
+        return self
 
 
 class SendOfferBody(BaseModel):
