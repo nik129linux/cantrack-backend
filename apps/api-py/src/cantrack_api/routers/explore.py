@@ -25,6 +25,7 @@ from ..bidding_eligibility import nearby_walker_ids, project_to_metres
 from ..db import run_query
 from ..deps import current_role, get_current_user, get_now, get_supabase
 from ..geo import haversine_km
+from .. import walker_access
 from ..owner_access import owner_from_path
 from ..structures import Quadtree
 
@@ -53,9 +54,6 @@ MARKET_WINDOW_DAYS = 60
 DEFAULT_COP_PER_MINUTE = 330
 MIN_FARE_COP = 8000
 FARE_STEP_COP = 1000
-
-#: A walker position is fresh enough to count for this many minutes.
-POSITION_TTL_MINUTES = 30
 
 BAD_CURSOR_MESSAGE = "The cursor is not valid."
 BAD_DURATION_MESSAGE = "durationMinutes must be one of 30, 45, 60, 90 or 120."
@@ -460,8 +458,9 @@ def count_nearby_walkers(
 ) -> dict[str, Any]:
     """Count walkers with a fresh position inside the bidding radius.
 
-    Fresh positions (``updated_at`` within ``POSITION_TTL_MINUTES``) are
-    projected into the hand-written Quadtree the same way
+    Fresh positions (``updated_at`` within
+    ``walker_access.ONLINE_TTL_SECONDS``) are projected into the hand-written
+    Quadtree the same way
     ``list_open_requests`` does, and the radius query answers how many are
     around the point. Only the count and the radius are returned — never who
     the walkers are or where exactly they are.
@@ -487,7 +486,7 @@ def count_nearby_walkers(
             status_code=status.HTTP_403_FORBIDDEN, detail=OWNERS_ONLY_MESSAGE
         )
 
-    cutoff = now - timedelta(minutes=POSITION_TTL_MINUTES)
+    cutoff = now - timedelta(seconds=walker_access.ONLINE_TTL_SECONDS)
     positions = run_query(supabase.table(POSITIONS_TABLE).select("*"))
     nearby_walkers: Quadtree[str] = Quadtree(*QUADTREE_BOUNDS)
     for position in positions:

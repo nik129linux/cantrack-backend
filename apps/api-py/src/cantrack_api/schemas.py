@@ -395,12 +395,15 @@ class CreateBiddingRequestBody(BaseModel):
 class SendOfferBody(BaseModel):
     """Body of ``POST /bidding/requests/{id}/offers`` (FR-23).
 
-    A walker's bid: the price they ask for the walk and their estimated
-    minutes to reach the pickup. The distance the score also uses comes from
-    the walker's stored position, never from the body.
+    A walker answers the owner's fare with ``kind="accept"`` (no price needed)
+    or ``kind="counter"`` (a price is required), plus their estimated minutes
+    to reach the pickup. A missing ``kind`` is the legacy counter-offer body.
+    The distance the score also uses comes from the walker's stored position,
+    never from the body.
     """
 
-    priceCop: int = Field(ge=0, le=1_000_000)
+    kind: Literal["accept", "counter"] | None = None
+    priceCop: int | None = Field(default=None, ge=0, le=1_000_000)
     etaMin: float = Field(ge=0, le=240, allow_inf_nan=False)
 
 
