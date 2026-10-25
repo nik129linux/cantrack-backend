@@ -1,0 +1,238 @@
+{
+  "info": {
+    "name": "CanTrack — Walker Rutas",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Walker tab 'rutas': Happy path then Exploits; every exploit must get the 4xx in its name. Environment: baseUrl, walkerToken, walkerId, otherWalkerToken, otherWalkerId, ownerToken, ownerId, dogId. Run top to bottom: later requests use ids the earlier ones store."
+  },
+  "item": [
+    {
+      "name": "Happy path",
+      "item": [
+        {
+          "name": "Today's route",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/route",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "route"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"date\", \"start\", \"stops\", \"totalKm\", \"totalMinutes\", \"nextStopId\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A given day",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/route?date=2026-11-19",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "route"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "2026-11-19"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"date echoed\", function () { pm.expect(pm.response.json().date).to.eql(\"2026-11-19\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Exploits",
+      "item": [
+        {
+          "name": "Bad date → 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/route?date=2026-13-01",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "route"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "2026-13-01"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Date in another format → 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/route?date=19/11/2026",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "route"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "19/11/2026"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "IDOR: another walker's route → 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherWalkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/route",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "route"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "No token → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/route",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "route"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
