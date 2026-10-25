@@ -46,6 +46,10 @@ def account(fake):
     walk(fake, "w-asg-soon", "assigned", T_SOON, dog_id="d2")
     walk(fake, "w-open", "open", T_SOON, walker_id=None)
     walk(fake, "w-theirs", "done", T_PAST2, walker_id="walker-v")
+    walk(fake, "w-cancelled", "cancelled", T_PAST2)
+    fake.seed("checkouts", id="ck-1", request_id="w-done1", dog_id="d1", owner_id="owner-a", walker_id="walker-w",
+              photo_paths=[], note="Luna walked great", ai_status="ok", status="sent",
+              created_at="2026-09-10T17:00:00+00:00")
     fake.seed("walk_offers", id="of-1", walk_request_id="w-open", walker_id="walker-w", price_cop=20000,
               eta_min=5.0, distance_km=1.0, created_at="2026-09-30T00:00:00+00:00")
     fake.seed("walk_offers", id="of-2", walk_request_id="w-done2", walker_id="walker-w", price_cop=14000,
@@ -75,6 +79,12 @@ class TestWalks:
                            "requestedTime": T_PAST2, "durationHours": 1.0, "priceCop": 14000, "rating": None}
         assert body[1]["rating"] == 5 and body[1]["priceCop"] == 20000
 
+    def test_a_fractional_rating_is_returned_as_is(self, fake_client, account):
+        account.tables["walk_ratings"][0]["rating"] = 4.5
+        body = walks(fake_client, "past")
+        assert body.status_code == 200
+        assert [w["rating"] for w in body.json()] == [None, 4.5]
+
     def test_active(self, fake_client, account):
         walk(account, "w-live", "in_walk", T_SOON)
         assert [w["id"] for w in walks(fake_client, "active").json()] == ["w-live"]
@@ -100,7 +110,9 @@ class TestExport:
         assert body["profile"]["consent"] == {"version": "2026-10", "at": "2026-10-01T00:00:00+00:00"}
         assert body["position"] == {"lat": 1.2, "lng": -77.2, "updatedAt": "2026-10-01T00:00:00+00:00"}
         assert {o["id"] for o in body["offers"]} == {"of-1", "of-2"}
-        assert {w["id"] for w in body["walks"]} == {"w-done1", "w-done2", "w-asg-later", "w-asg-soon"}
+        assert {w["id"] for w in body["walks"]} == {"w-done1", "w-done2", "w-asg-later", "w-asg-soon", "w-cancelled"}
+        # The pickup point is the OWNER's home: it is not the walker's data to take away.
+        assert set(body["walks"][0]) == {"id", "status", "dogId", "requestedTime", "durationHours", "priceCop"}
         assert [r["rating"] for r in body["ratingsReceived"]] == [5]
         assert "Vale" not in res.text and "of-v" not in res.text and "w-theirs" not in res.text
 
@@ -129,6 +141,9 @@ class TestDelete:
         assert (by_id["w-asg-soon"]["status"], by_id["w-asg-soon"]["walker_id"]) == ("open", None)
         assert by_id["w-asg-later"]["status"] == "open"
         assert by_id["w-theirs"]["walker_id"] == "walker-v"
+        # Any other walk I touched (cancelled, expired, legacy) stays for the owner, detached from me.
+        assert (by_id["w-cancelled"]["status"], by_id["w-cancelled"]["walker_id"]) == ("cancelled", None)
+        assert [(c["id"], c["walker_id"]) for c in account.tables["checkouts"]] == [("ck-1", None)]
         assert [o["id"] for o in account.tables["walk_offers"]] == ["of-v"]
         assert [p["walker_id"] for p in account.tables["walker_positions"]] == ["walker-v"]
         assert [p["walker_id"] for p in account.tables["walker_profiles"]] == ["walker-v"]
