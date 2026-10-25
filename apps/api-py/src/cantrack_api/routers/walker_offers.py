@@ -70,6 +70,8 @@ def withdraw_offer(
 
     The offer is found by request and caller, so another walker's bid is never
     touched. A request that already moved past ``open`` keeps its offers.
+    After the delete the request is re-read: if the owner picked in between,
+    the deleted offer is put back exactly as it was and 409 is answered.
 
     Args:
         request_id: The walk request whose offer to withdraw.
@@ -114,6 +116,18 @@ def withdraw_offer(
     run_query(
         supabase.table(OFFERS_TABLE).delete().eq("id", offers[0]["id"])
     )
+    # Compensation for the withdraw-vs-pick race: the owner may have picked
+    # between the open-check above and the delete, leaving the walk assigned
+    # but the agreed price gone. Re-read the request; if it is no longer open,
+    # restore the deleted offer row exactly and answer 409.
+    requests = run_query(
+        supabase.table(REQUESTS_TABLE).select("*").eq("id", request_id)
+    )
+    if not requests or requests[0]["status"] != "open":
+        run_query(supabase.table(OFFERS_TABLE).insert(offers[0]))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=NOT_OPEN_MESSAGE
+        )
 
 
 @router.get("/walkers/{walkerId}/offers", response_model=list[MyOfferView])
