@@ -1,0 +1,233 @@
+{
+  "info": {
+    "name": "CanTrack — Walker Clientes",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Walker tab 'clientes': Happy path then Exploits; every exploit must get the 4xx in its name. Environment: baseUrl, walkerToken, walkerId, otherWalkerToken, otherWalkerId, ownerToken, ownerId, dogId. Run top to bottom: later requests use ids the earlier ones store."
+  },
+  "item": [
+    {
+      "name": "Happy path",
+      "item": [
+        {
+          "name": "My clients",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "clients"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"list\", function () { pm.expect(pm.response.json()).to.be.an(\"array\"); });",
+                  "pm.test(\"no emails\", function () { pm.expect(pm.response.text()).to.not.include(\"@\"); });",
+                  "const first = pm.response.json()[0]; if (first) { pm.environment.set(\"clientId\", first.ownerId); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Client detail (care notes)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/clients/{{clientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "clients",
+                "{{clientId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"clientId\")) { pm.environment.set(\"clientId\", pm.environment.get(\"ownerId\")); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 or 404\", function () { pm.expect(pm.response.code).to.be.oneOf([200, 404]); });",
+                  "pm.test(\"no embeddings\", function () { pm.expect(pm.response.text()).to.not.include(\"embedding\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Exploits",
+      "item": [
+        {
+          "name": "IDOR: another walker's clients → 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherWalkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "clients"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner who is not my client → 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/clients/00000000-0000-0000-0000-000000000000",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "clients",
+                "00000000-0000-0000-0000-000000000000"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404\", function () { pm.response.to.have.status(404); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner reads a walker's clients → 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{ownerId}}/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{ownerId}}",
+                "clients"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "No token → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "clients"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
