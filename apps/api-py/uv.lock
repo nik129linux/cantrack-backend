@@ -94,7 +94,7 @@ filecache = [
 [[package]]
 name = "cantrack-ai"
 version = "0.1.0"
-source = { git = "https://github.com/nik129linux/cantrack-ai.git#6edd1c9db4273ebca48c8c98ec5434b44b2ce4be" }
+source = { git = "https://github.com/nik129linux/cantrack-ai.git#039574d4552a324057cc3de5b61b0d17b619b945" }
 dependencies = [
     { name = "httpx" },
     { name = "numpy" },

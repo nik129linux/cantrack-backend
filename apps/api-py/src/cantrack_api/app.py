@@ -47,6 +47,12 @@ def rate_limit_key(request: Request) -> str:
 
     O(1): one header lookup and one hash of a short token.
 
+    Railway's edge overwrites X-Real-IP on every request and publishes no
+    stable proxy CIDRs, so the header is trusted only when CLIENT_IP_HEADER
+    says the app runs behind it: anywhere else a caller could forge it and
+    dodge the anonymous rate limits. The variable is read at call time so
+    tests and deploys can change it without a restart.
+
     Args:
         request: The incoming request, read for its bearer token and client.
 
@@ -60,6 +66,11 @@ def rate_limit_key(request: Request) -> str:
     if len(parts) == 2 and parts[0].lower() == "bearer" and parts[1].strip():
         digest = hashlib.sha256(parts[1].strip().encode()).hexdigest()[:32]
         return f"user:{digest}"
+    header_name = os.environ.get("CLIENT_IP_HEADER", "").strip()
+    if header_name:
+        header_value = request.headers.get(header_name.lower(), "").strip()
+        if header_value:
+            return f"ip:{header_value[:45]}"
     host = request.client.host if request.client is not None else "unknown"
     return f"ip:{host}"
 
