@@ -302,7 +302,13 @@ def create_app() -> FastAPI:
         profile_data,
         requests,
         routes,
+        walker_clients,
+        walker_data,
+        walker_home,
+        walker_offers,
+        walker_profile,
         walker_profiles,
+        walker_route,
         walks,
     )
 
@@ -319,6 +325,9 @@ def create_app() -> FastAPI:
     # so the tab PRs never touch this file.
     for owner_tab in (home, explore, explore_ai, walks, profile, profile_data):
         application.include_router(owner_tab.router)
+    # Walker tabs (W1-W5), same rule: the tab PRs never touch this file.
+    for walker_tab in (walker_home, walker_offers, walker_clients, walker_route, walker_profile, walker_data):
+        application.include_router(walker_tab.router)
 
     from starlette.exceptions import HTTPException as StarletteHTTPException
 
