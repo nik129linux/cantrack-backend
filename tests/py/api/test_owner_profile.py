@@ -103,6 +103,17 @@ class TestAvatar:
         assert res.json() == UNREADABLE
         assert not fake.storage.objects
 
+    @pytest.mark.parametrize("side", [6000, 20000])
+    def test_a_decompression_bomb_is_refused_before_decoding(self, fake_client, fake, side):
+        # One colour compresses to a few KB but decodes to side*side*3 bytes
+        # (6000 -> ~108 MB, past our 25 MP cap; 20000 -> ~1.2 GB, past PIL's own).
+        buffer = io.BytesIO()
+        Image.new("1", (side, side), 0).save(buffer, format="PNG")
+        assert len(buffer.getvalue()) < 2 * 1024 * 1024
+        res = self.upload(fake_client, buffer.getvalue())
+        assert res.status_code == 400
+        assert not fake.storage.objects
+
     def test_over_2_mb_is_413(self, fake_client):
         res = self.upload(fake_client, b"\x89PNG\r\n\x1a\n" + b"\x00" * (2 * 1024 * 1024 + 1))
         assert res.status_code == 413
