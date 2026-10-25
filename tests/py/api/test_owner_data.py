@@ -16,7 +16,8 @@ CONFIRM_REQUIRED = {"detail": 'Send {"confirm": "DELETE"} to delete the account.
 @pytest.fixture
 def account(fake):
     fake.seed("owner_profiles", owner_id="owner-a", display_name="Camila", phone="+57 300",
-              avatar_path="owner-a/avatar.webp")
+              avatar_path="owner-a/avatar.webp", home_lat=1.2, home_lng=-77.2, home_label="Casa",
+              consent_version="2026-10", consent_at="2026-10-01T00:00:00+00:00")
     fake.storage.objects[("avatars", "owner-a/avatar.webp")] = b"RIFF0000WEBP"
     fake.seed("dogs", id="d1", owner_id="owner-a", name="Luna", embedding=[0.1] * 4)
     fake.seed("dogs", id="d-b", owner_id="owner-b", name="Theirs")
@@ -40,6 +41,9 @@ class TestExport:
         body = res.json()
         assert set(body) == {"exportedAt", "profile", "dogs", "walkRequests", "ratingsGiven"}
         assert body["profile"]["displayName"] == "Camila"
+        # Ley 1581: the consent record and the home pin travel with the export.
+        assert body["profile"]["consent"] == {"version": "2026-10", "at": "2026-10-01T00:00:00+00:00"}
+        assert body["profile"]["home"] == {"lat": 1.2, "lng": -77.2, "label": "Casa"}
         assert [dog["name"] for dog in body["dogs"]] == ["Luna"]
         assert {walk["id"] for walk in body["walkRequests"]} == {"w-open", "w-asg", "w-done"}
         assert [rating["rating"] for rating in body["ratingsGiven"]] == [5]

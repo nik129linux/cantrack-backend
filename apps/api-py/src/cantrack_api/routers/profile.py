@@ -232,7 +232,7 @@ def _view(
     Returns:
         The profile in the API shape.
     """
-    home = row.get("home")
+    has_home = row.get("home_lat") is not None and row.get("home_lng") is not None
     version = row.get("consent_version")
     at = row.get("consent_at")
     return OwnerProfile(
@@ -241,7 +241,11 @@ def _view(
         displayName=row.get("display_name"),
         phone=row.get("phone"),
         avatarUrl=avatar_url,
-        home=Home(**home) if home else None,
+        home=(
+            Home(lat=row["home_lat"], lng=row["home_lng"], label=row.get("home_label") or "")
+            if has_home
+            else None
+        ),
         consent=Consent(version=version, at=at) if version is not None and at else None,
         stats=stats,
     )
@@ -307,7 +311,11 @@ def save_owner_profile(
     if "phone" in body.model_fields_set:
         values["phone"] = body.phone
     if "home" in body.model_fields_set:
-        values["home"] = body.home.model_dump() if body.home else None
+        # owner_profiles stores the pin as three columns (home_lat/home_lng/home_label).
+        home = body.home
+        values["home_lat"] = home.lat if home else None
+        values["home_lng"] = home.lng if home else None
+        values["home_label"] = home.label if home else None
     row = _save_row(supabase, owner.id, values)
     avatar_url = _signed_avatar(supabase, row.get("avatar_path"))
     return _view(owner, row, _stats(supabase, owner.id), avatar_url)

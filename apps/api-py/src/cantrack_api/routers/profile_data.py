@@ -57,8 +57,16 @@ def _profile_view(owner_id: str, row: dict[str, Any] | None) -> dict[str, Any]:
         "displayName": row.get("display_name"),
         "phone": row.get("phone"),
         "avatarPath": row.get("avatar_path"),
-        "home": row.get("home"),
-        "consent": row.get("consent"),
+        "home": (
+            {"lat": row["home_lat"], "lng": row["home_lng"], "label": row.get("home_label")}
+            if row.get("home_lat") is not None
+            else None
+        ),
+        "consent": (
+            {"version": row["consent_version"], "at": row.get("consent_at")}
+            if row.get("consent_version")
+            else None
+        ),
     }
 
 
