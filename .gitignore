@@ -8,3 +8,5 @@ __pycache__/
 .hypothesis/
 local.env.json
 *.local.txt
+# Google OAuth client secrets, never commit
+client_secret_*.json
