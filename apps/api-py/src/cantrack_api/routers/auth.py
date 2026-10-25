@@ -43,7 +43,7 @@ RESENT_MESSAGE = "If the account exists and is not verified, we sent a new link.
 BAD_SESSION_MESSAGE = "Invalid or expired session."
 WRONG_CURRENT_MESSAGE = "Current password is incorrect."
 SAME_PASSWORD_MESSAGE = "Choose a password different from the current one."
-CHANGED_MESSAGE = "Password changed. Other sessions were signed out."
+CHANGED_MESSAGE = "Password changed. Every other session was signed out."
 WEAK_PASSWORD_MESSAGE = "Password does not meet the security policy."
 
 
@@ -69,9 +69,15 @@ class RefreshResponse(BaseModel):
 
 
 class ChangePasswordResponse(BaseModel):
-    """Answer of ``POST /auth/change-password``."""
+    """Answer of ``POST /auth/change-password``: the message and a NEW session.
+
+    Supabase revokes every session of the user when the password changes, the
+    caller's own included, so the API signs in again with the new password and
+    hands that session back for this device (``setSession`` on the client).
+    """
 
     message: str
+    session: dict[str, Any]
 
 
 def _bearer_token(request: Request) -> str:
@@ -388,9 +394,14 @@ def change_password(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=WRONG_CURRENT_MESSAGE,
         ) from exc
+    # Supabase revokes ALL of the user's sessions on a password change (found
+    # against the real project: a follow-up sign_out("others") then fails with
+    # "Session ... does not exist"), so every other device is already out.
     supabase.auth.admin.update_user_by_id(user.id, {"password": body.newPassword})
-    supabase.auth.admin.sign_out(_bearer_token(request), "others")
-    return {"message": CHANGED_MESSAGE}
+    fresh = auth_client.auth.sign_in_with_password(
+        {"email": user.email, "password": body.newPassword}
+    )
+    return {"message": CHANGED_MESSAGE, "session": fresh.session.model_dump(mode="json")}
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

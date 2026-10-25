@@ -297,6 +297,10 @@ class FakeAdmin:
                     for account in self._auth.accounts.values():
                         if account["user"].id == uid:
                             account["password"] = attributes["password"]
+                    # Like GoTrue: a password change revokes EVERY session of
+                    # the user, the caller's own included.
+                    self._auth.users_by_token = {token: owner for token, owner in self._auth.users_by_token.items()
+                                                 if owner.id != uid}
                 return SimpleNamespace(user=user)
         raise AuthApiError("User not found", 404, None)
 

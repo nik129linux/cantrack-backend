@@ -22,7 +22,7 @@ RESENT = {"message": "If the account exists and is not verified, we sent a new l
 BAD_SESSION = {"detail": "Invalid or expired session."}
 WRONG_CURRENT = {"detail": "Current password is incorrect."}
 SAME_PASSWORD = {"detail": "Choose a password different from the current one."}
-CHANGED = {"message": "Password changed. Other sessions were signed out."}
+CHANGED = "Password changed. Every other session was signed out."
 
 
 @pytest.fixture
@@ -180,14 +180,16 @@ class TestChangePassword:
         return client.post("/auth/change-password", json={"currentPassword": current, "newPassword": new},
                            headers=bearer(token))
 
-    def test_changes_it_and_signs_out_the_other_devices(self, fake_client, accounts):
+    def test_changes_it_signs_out_everyone_and_hands_back_a_new_session(self, fake_client, accounts):
         phone = login(fake_client).json()["access_token"]
         laptop = login(fake_client).json()["access_token"]
         res = self.change(fake_client, laptop)
-        assert res.status_code == 200 and res.json() == CHANGED
+        assert res.status_code == 200 and res.json()["message"] == CHANGED
         assert accounts.accounts["owner-a@example.com"]["password"] == "a brand new passphrase"
         assert fake_client.get("/dogs", headers=bearer(phone)).status_code == 401   # other device out
-        assert fake_client.get("/dogs", headers=bearer(laptop)).status_code == 200  # this one stays
+        assert fake_client.get("/dogs", headers=bearer(laptop)).status_code == 401  # old token too (Supabase)
+        fresh = res.json()["session"]["access_token"]
+        assert fake_client.get("/dogs", headers=bearer(fresh)).status_code == 200   # this device continues
         assert login(fake_client, password="a brand new passphrase").status_code == 200
 
     def test_wrong_current_password(self, fake_client, accounts):

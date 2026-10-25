@@ -80,7 +80,7 @@ Bearer token, body `{"currentPassword", "newPassword"}`.
 
 | Status | UI (es) |
 |---|---|
-| 200 | "Contraseña cambiada. Cerramos tu sesión en los otros dispositivos." |
+| 200 | `{message, session}`: Supabase closes EVERY session on a password change, this one included, so call `supabase.auth.setSession(session)` with the returned tokens right away. Show "Contraseña cambiada. Cerramos tu sesión en los otros dispositivos." |
 | 401 | "La contraseña actual no es correcta." (it counts toward the 5-attempt lockout) |
 | 400 | the rule that failed, or "Usa una contraseña distinta a la actual" |
 
