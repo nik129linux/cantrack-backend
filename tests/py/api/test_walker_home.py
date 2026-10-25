@@ -112,6 +112,12 @@ class TestHome:
     def test_greeting_uses_the_walker_profile_name(self, fake_client, data):
         assert get_home(fake_client).json()["greetingName"] == "Mateo"
 
+    def test_without_a_profile_the_greeting_is_the_email_prefix_never_the_id(self, fake_client, data):
+        # Real ids are UUIDs: the fallback must read the email, not the account id.
+        data.add_user("token-z", make_user("7f3c9a1e-uuid", "zoe.paseadora@example.com", "walker"))
+        res = get_home(fake_client, token="token-z", walker_id="7f3c9a1e-uuid")
+        assert res.json()["greetingName"] == "zoe.paseadora"
+
     def test_online_follows_the_heartbeat(self, fake_client, data):
         position(data, seconds_ago=60)
         assert get_home(fake_client).json()["online"] is True
