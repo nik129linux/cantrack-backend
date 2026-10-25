@@ -9,11 +9,14 @@ call-shape assertion.
 
 from __future__ import annotations
 
+import pathlib
+import re
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
+from postgrest.exceptions import APIError
 from storage3.exceptions import StorageApiError
 from supabase_auth.errors import AuthApiError
 
@@ -45,6 +48,40 @@ def _normalize_timestamps(payload: Any) -> Any:
         key: _normalize_utc_timestamp(value) if key in TIMESTAMP_COLUMNS else value
         for key, value in payload.items()
     }
+
+
+_BACKEND = pathlib.Path(__file__).resolve().parents[3]
+_SCHEMA_CANDIDATES = [
+    _BACKEND.parent / "cantrack-db" / "apps" / "api-py" / "schema.sql",
+    _BACKEND / "cantrack-db" / "apps" / "api-py" / "schema.sql",
+]
+
+
+def _schema_columns() -> dict[str, set[str]]:
+    """Columns per table from cantrack-db's schema.sql (create table + add column).
+
+    The real PostgREST refuses a write to a column that does not exist
+    (PGRST204). Without this, every test passes while the API writes columns
+    the database does not have (it happened: owner_profiles.home).
+    """
+    schema = next((path for path in _SCHEMA_CANDIDATES if path.exists()), None)
+    if schema is None:
+        return {}
+    sql = schema.read_text()
+    columns: dict[str, set[str]] = {}
+    for table, body in re.findall(r"create table if not exists public\.(\w+) \((.*?)\n\);", sql, re.S):
+        names = set()
+        for line in body.splitlines():
+            match = re.match(r"\s+([a-z_][a-z0-9_]*)\s+(?!key\b)[a-z]", line)
+            if match and match.group(1) not in ("primary", "unique", "check", "constraint", "foreign"):
+                names.add(match.group(1))
+        columns[table] = names
+    for table, column in re.findall(r"alter table public\.(\w+) add column if not exists (\w+)", sql):
+        columns.setdefault(table, set()).add(column)
+    return columns
+
+
+SCHEMA_COLUMNS = _schema_columns()
 
 
 class FakeQuery:
@@ -108,6 +145,13 @@ class FakeQuery:
         hook = self._db.before_execute.pop((self._table, self._op), None)
         if hook is not None:
             hook(self._db)
+        known = SCHEMA_COLUMNS.get(self._table)
+        if known and self._op in ("insert", "update") and isinstance(self._payload, dict):
+            unknown = sorted(set(self._payload) - known)
+            if unknown:
+                raise APIError({"message": f"Could not find the '{unknown[0]}' column of "
+                                           f"'{self._table}' in the schema cache",
+                                "code": "PGRST204", "hint": None, "details": None})
         rows = self._db.tables.setdefault(self._table, [])
         if self._op == "insert":
             row = {
