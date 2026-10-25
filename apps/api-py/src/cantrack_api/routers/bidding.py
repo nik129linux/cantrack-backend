@@ -19,7 +19,8 @@ one recorded. No endpoint writes to the trace.
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel
 from supabase import Client
 from supabase_auth.types import User
 
@@ -40,8 +41,9 @@ from ..bidding_eligibility import (
     project_to_metres,
 )
 from ..db import first_row, run_query
-from ..deps import current_role, get_current_user, get_now, get_supabase
+from ..deps import current_role, get_current_user, get_now, get_supabase, get_text_model
 from ..geo import haversine_km
+from ..walk_report import build_and_store_walk_report
 from ..replay import (
     BACKWARD,
     FORWARD,
@@ -118,6 +120,14 @@ BUSY_STATUSES = ["assigned", "in_walk"]
 
 #: Quadtree bounds in metres (the eligibility tests use the same).
 QUADTREE_BOUNDS = (-20_000_000.0, -20_000_000.0, 20_000_000.0, 20_000_000.0)
+
+
+class CheckOutResponse(BaseModel):
+    """The walk after a successful check-out."""
+
+    id: str
+    status: str
+    walkerId: str | None = None
 
 
 def _role(user: User) -> str | None:
@@ -1294,12 +1304,14 @@ def check_in_walk(
     )
 
 
-@router.post("/requests/{request_id}/check-out")
+@router.post("/requests/{request_id}/check-out", response_model=CheckOutResponse)
 def check_out_walk(
     request_id: str,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase),
     now: datetime = Depends(get_now),
+    text_model: Any = Depends(get_text_model),
 ) -> dict[str, Any]:
     """Finish the walk (the assigned walker only).
 
@@ -1320,7 +1332,7 @@ def check_out_walk(
             500 (database).
     """
     walk_request = _assigned_request(supabase, request_id, user.id)
-    return _apply_transition(
+    resolved = _apply_transition(
         supabase,
         request_id,
         walk_request,
@@ -1329,6 +1341,10 @@ def check_out_walk(
         "check_out",
         now,
     )
+    # The report (and its optional model call, up to the client's timeout) runs
+    # after the response is sent, so closing a walk never waits on the AI.
+    background_tasks.add_task(build_and_store_walk_report, supabase, request_id, now, text_model)
+    return resolved
 
 
 @router.post("/requests/{request_id}/ratings", status_code=status.HTTP_201_CREATED)
