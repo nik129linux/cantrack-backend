@@ -87,15 +87,18 @@ def _min_max_lower_better(values: list[float]) -> list[float]:
     return [(highest - value) / span for value in values]
 
 
-def score_offers(walk_offers: list[WalkOffer], config: BiddingConfig = DEFAULT_CONFIG) -> dict[str, float]:
-    """Return ``{offer_id: final_score}`` for every offer on one request.
+def score_parts(
+    walk_offers: list[WalkOffer], config: BiddingConfig = DEFAULT_CONFIG
+) -> dict[str, dict[str, float]]:
+    """Return each offer's normalised ``price``/``distance``/``rating`` terms.
 
-    Each term (price, distance, rating) is min-max normalised to 0..1 across
-    the offers on the same request: lower price and lower distance score
-    higher, higher rating scores higher (``None`` counts as raw 0.0). A single
-    offer scores 1.0 on every term; an all-equal term scores 1.0 for every
-    offer. The weighted sum is multiplied by ``empty_bucket_penalty`` while the
-    walker's bucket is empty.
+    The terms are exactly the ones :func:`score_offers` weights: lower price
+    and lower distance score higher, higher rating scores higher (``None``
+    counts as raw 0.0), each min-max normalised to 0..1 across the offers on
+    the same request. A single offer scores 1.0 on every term; an all-equal
+    term scores 1.0 for every offer. ``config`` is accepted so a caller can
+    weight the terms with the same knobs, although the normalisation itself
+    does not depend on it.
 
     Big-O: O(n), where n is the number of offers.
     """
@@ -111,12 +114,39 @@ def score_offers(walk_offers: list[WalkOffer], config: BiddingConfig = DEFAULT_C
     distance_terms = _min_max_lower_better(distances)
     rating_terms = _min_max_higher_better(ratings)
 
+    return {
+        offer.offer_id: {
+            "price": price_terms[index],
+            "distance": distance_terms[index],
+            "rating": rating_terms[index],
+        }
+        for index, offer in enumerate(walk_offers)
+    }
+
+
+def score_offers(walk_offers: list[WalkOffer], config: BiddingConfig = DEFAULT_CONFIG) -> dict[str, float]:
+    """Return ``{offer_id: final_score}`` for every offer on one request.
+
+    Each term (price, distance, rating) is min-max normalised to 0..1 across
+    the offers on the same request, then weighted with ``config``. The
+    weighted sum is multiplied by ``empty_bucket_penalty`` while the walker's
+    bucket is empty. The normalised terms come from :func:`score_parts`, so
+    the explanation and the score can never drift apart.
+
+    Big-O: O(n), where n is the number of offers.
+    """
+
+    if not walk_offers:
+        return {}
+
+    parts = score_parts(walk_offers, config)
     scores: dict[str, float] = {}
-    for index, offer in enumerate(walk_offers):
+    for offer in walk_offers:
+        terms = parts[offer.offer_id]
         base_score = (
-            config.price_weight * price_terms[index]
-            + config.distance_weight * distance_terms[index]
-            + config.rating_weight * rating_terms[index]
+            config.price_weight * terms["price"]
+            + config.distance_weight * terms["distance"]
+            + config.rating_weight * terms["rating"]
         )
         if offer.bucket_empty:
             base_score *= config.empty_bucket_penalty

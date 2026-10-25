@@ -186,7 +186,7 @@ def _walker_view(row: dict[str, Any], dog_row: dict[str, Any]) -> dict[str, Any]
     return view
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED, deprecated=True)
 def create_request(
     body: CreateRequestBody,
     user: User = Depends(get_current_user),
@@ -287,7 +287,7 @@ def create_request(
     return _owner_view(created, profile["display_name"], dog["name"])
 
 
-@router.get("")
+@router.get("", deprecated=True)
 def list_requests(
     user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase),
@@ -353,7 +353,7 @@ def list_requests(
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ROLE_MESSAGE)
 
 
-@router.get("/{request_id}")
+@router.get("/{request_id}", deprecated=True)
 def get_request(
     request_id: uuid.UUID,
     user: User = Depends(get_current_user),
@@ -425,7 +425,7 @@ def _load_for_walker(
     )
 
 
-@router.post("/{request_id}/accept")
+@router.post("/{request_id}/accept", deprecated=True)
 def accept_request(
     request_id: uuid.UUID,
     user: User = Depends(get_current_user),
@@ -495,7 +495,7 @@ def accept_request(
     }
 
 
-@router.post("/{request_id}/decline")
+@router.post("/{request_id}/decline", deprecated=True)
 def decline_request(
     request_id: uuid.UUID,
     user: User = Depends(get_current_user),
@@ -537,7 +537,7 @@ def decline_request(
     return {"id": row["id"], "status": "declined", "respondedAt": responded_at}
 
 
-@router.post("/{request_id}/cancel")
+@router.post("/{request_id}/cancel", deprecated=True)
 def cancel_request(
     request_id: uuid.UUID,
     user: User = Depends(get_current_user),
