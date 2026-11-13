@@ -77,6 +77,9 @@ class WalkListItem(BaseModel):
     priceCop: int
     canRate: bool
     hasReport: bool
+    distanceKm: float | None = None
+    durationMin: int | None = None
+    rating: float | None = None
 
 
 class WalkListResponse(BaseModel):
@@ -84,6 +87,29 @@ class WalkListResponse(BaseModel):
 
     items: list[WalkListItem]
     nextCursor: str | None
+
+
+class MonthSummary(BaseModel):
+    """Finished walks in the current Bogota calendar month."""
+
+    walks: int
+    km: float
+    minutes: int
+
+
+class TabCounts(BaseModel):
+    """How many walks each tab holds."""
+
+    upcoming: int
+    active: int
+    past: int
+
+
+class WalkSummary(BaseModel):
+    """The header of Mis paseos: this month's totals and the tab counters."""
+
+    month: MonthSummary
+    counts: TabCounts
 
 
 class DogCard(BaseModel):
@@ -122,6 +148,11 @@ class WalkReport(BaseModel):
 class WalkDetail(BaseModel):
     """The full detail of one walk, as its owner or assigned walker sees it."""
 
+    id: str
+    status: str
+    requestedTime: str
+    windowEnd: str | None
+    durationHours: float | None
     dog: DogCard
     walker: WalkerCard
     priceCop: int
@@ -382,6 +413,7 @@ def list_walks(
         offers = offers_by_request.get(row["id"], [])
         profile = profiles.get(row.get("walker_id")) or {}
         dog = dogs.get(row.get("dog_id")) or {}
+        given = ratings_by_request.get(row["id"]) or []
         items.append(
             {
                 "id": row["id"],
@@ -396,9 +428,78 @@ def list_walks(
                 "canRate": row["status"] == "done"
                 and not ratings_by_request.get(row["id"]),
                 "hasReport": row.get("report_status") is not None,
+                "distanceKm": row.get("report_distance_km"),
+                "durationMin": row.get("report_duration_min"),
+                "rating": given[0].get("rating") if given else None,
             }
         )
     return {"items": items, "nextCursor": next_cursor}
+
+
+#: America/Bogota is UTC-5 all year (no daylight saving), so a fixed offset is exact.
+BOGOTA = timezone(timedelta(hours=-5))
+
+
+@router.get("/owners/{ownerId}/walks/summary", response_model=WalkSummary)
+@limiter.limit("30/minute")
+def walk_summary(
+    request: Request,
+    owner: User = Depends(owner_from_path),
+    supabase: Client = Depends(get_supabase),
+    now: datetime = Depends(get_now),
+) -> WalkSummary:
+    """Totals for the header of Mis paseos and the counter of each tab.
+
+    ``month`` adds up the owner's ``done`` walks whose requested time falls in
+    the current calendar month in Bogota, using the report's distance and
+    duration (falling back to the booked duration when there is no report).
+
+    Args:
+        request: The request, read by the rate limiter.
+        owner: The authenticated owner named in the path.
+        supabase: The Supabase client.
+        now: The current time, injected so tests can freeze it.
+
+    Returns:
+        ``{month: {walks, km, minutes}, counts: {upcoming, active, past}}``.
+
+    Raises:
+        HTTPException: 403 when the caller is not that owner, 500 on database
+            errors.
+
+    Big-O: O(n) in the owner's walk rows, read with one query.
+    """
+    rows = run_query(
+        supabase.table(REQUESTS_TABLE)
+        .select("id,status,requested_time,duration_hours,report_distance_km,report_duration_min")
+        .eq("owner_id", owner.id)
+    )
+    local_now = now.astimezone(BOGOTA)
+    walks = 0
+    km = 0.0
+    minutes = 0
+    counts = {"upcoming": 0, "active": 0, "past": 0}
+    for row in rows:
+        state = row.get("status")
+        if state in UPCOMING_STATUSES:
+            counts["upcoming"] += 1
+        elif state in ACTIVE_STATUSES:
+            counts["active"] += 1
+        elif state in PAST_STATUSES:
+            counts["past"] += 1
+        if state != "done":
+            continue
+        when = _parse_stored_time(row.get("requested_time") or "").astimezone(BOGOTA)
+        if (when.year, when.month) != (local_now.year, local_now.month):
+            continue
+        walks += 1
+        km += float(row.get("report_distance_km") or 0)
+        reported = row.get("report_duration_min")
+        minutes += int(reported) if reported is not None else round(float(row.get("duration_hours") or 0) * 60)
+    return WalkSummary(
+        month=MonthSummary(walks=walks, km=round(km, 2), minutes=minutes),
+        counts=TabCounts(**counts),
+    )
 
 
 def _load_visible_walk(
@@ -562,6 +663,11 @@ def get_walk_detail(
     )
 
     return {
+        "id": row["id"],
+        "status": row["status"],
+        "requestedTime": row["requested_time"],
+        "windowEnd": row.get("window_end"),
+        "durationHours": row.get("duration_hours"),
         "dog": {"id": dog.get("id"), "name": dog.get("name")},
         "walker": {
             "id": walker_id,

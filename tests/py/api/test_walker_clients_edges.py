@@ -92,7 +92,10 @@ class TestMissingDog:
         assert item["dogs"] == [{"id": "dog-gone", "name": None}]
         res = detail(fake_client, "owner-a")
         assert res.status_code == 200
-        assert res.json()["dogs"] == [{"id": "dog-gone", "name": None, "profile": None}]
+        assert res.json()["dogs"] == [
+            {"id": "dog-gone", "name": None, "breed": None, "notes": None,
+             "profile": None, "note": None}
+        ]
         assert res.json()["walks"][0]["dogName"] is None
 
 

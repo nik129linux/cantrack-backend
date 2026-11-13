@@ -117,7 +117,12 @@ def signup(
         HTTPException: 400 if the signup fails, 503 if the server-side
             role cannot be stored.
     """
-    options: dict[str, Any] = {"data": {"role": body.role}}
+    metadata: dict[str, Any] = {"role": body.role}
+    if body.fullName is not None:
+        metadata["full_name"] = body.fullName
+    if body.phone is not None:
+        metadata["phone"] = body.phone
+    options: dict[str, Any] = {"data": metadata}
     redirect_to = os.environ.get("AUTH_EMAIL_REDIRECT_URL")
     if redirect_to:
         options["email_redirect_to"] = redirect_to
@@ -153,10 +158,30 @@ def signup(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=SIGNUP_ROLLBACK_MESSAGE,
             ) from exc
+    if user is not None and body.role == "owner" and (body.fullName or body.phone):
+        _seed_owner_profile(user.id, body.fullName, body.phone)
     return {
         "user": user.model_dump(mode="json") if user is not None else None,
         "session": session.model_dump(mode="json") if session is not None else None,
     }
+
+
+def _seed_owner_profile(owner_id: str, full_name: str | None, phone: str | None) -> None:
+    """Best-effort: store the signup name and phone on the owner's profile row.
+
+    A failure is only logged; the account already exists and the owner can
+    fill both in Perfil. Walkers keep them in the user metadata because their
+    profile row needs a price first.
+    """
+    values: dict[str, Any] = {"owner_id": owner_id}
+    if full_name:
+        values["display_name"] = full_name
+    if phone:
+        values["phone"] = phone
+    try:
+        get_supabase().table("owner_profiles").upsert(values).execute()
+    except Exception:
+        logger.exception("signup: seeding the owner profile failed for %s", owner_id)
 
 
 @router.post("/login")

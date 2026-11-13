@@ -4,11 +4,16 @@ Every endpoint hangs from ``walker_access.walker_from_path``, so the walker id
 always comes from the path guard and never from the request body. The wire
 format is camelCase; ``walker_profiles`` is snake_case with one row per walker,
 shared with the legacy ``/walker-profile`` catalog.
+
+What the walker writes here is what owners read on every offer card
+(``bidding.list_offers``): bio, area, experience and the dog sizes they take.
+The profile also carries the walker's track record (walks, hours, clients,
+the star breakdown) and the latest ratings, newest first.
 """
 
 import io
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from PIL import Image, UnidentifiedImageError
@@ -37,7 +42,12 @@ router = APIRouter()
 PROFILES_TABLE = "walker_profiles"
 WALK_REQUESTS_TABLE = "walk_requests"
 RATINGS_TABLE = "walk_ratings"
+DOGS_TABLE = "dogs"
+OWNER_PROFILES_TABLE = "owner_profiles"
 AVATAR_BUCKET = "avatars"
+MAX_REVIEWS = 5
+DogSize = Literal["small", "medium", "large"]
+SIZE_ORDER: tuple[str, ...] = ("small", "medium", "large")
 SAVED_MESSAGE = "Walker profile not found."
 NO_PROFILE_MESSAGE = "Save your profile before adding a photo."
 
@@ -55,6 +65,8 @@ class SaveWalkerProfileBody(BaseModel):
     bio: str | None = Field(default=None, max_length=500)
     serviceArea: str | None = Field(default=None, max_length=120)
     phone: str | None = Field(default=None, pattern=PHONE_PATTERN)
+    experienceYears: int | None = Field(default=None, ge=0, le=50)
+    dogSizes: list[DogSize] | None = Field(default=None, max_length=3)
 
 
 class ConsentBody(BaseModel):
@@ -64,17 +76,35 @@ class ConsentBody(BaseModel):
 
 
 class Rating(BaseModel):
-    """The walker's average rating and how many walks were rated."""
+    """The walker's average rating, how many walks were rated and the spread.
+
+    ``breakdown[i]`` counts the ratings that round to ``i + 1`` stars.
+    """
 
     average: float | None
     count: int
+    breakdown: list[int]
 
 
 class Stats(BaseModel):
     """Per-walker activity counters shown on the profile tab."""
 
     walksDone: int
+    hoursWalked: float
+    clients: int
     rating: Rating
+
+
+class Review(BaseModel):
+    """One rating an owner left, as the walker's Perfil lists it.
+
+    Only the owner's first name travels: it is enough to remember the walk.
+    """
+
+    rating: float
+    at: str
+    dogName: str | None
+    ownerName: str | None
 
 
 class Consent(BaseModel):
@@ -95,8 +125,12 @@ class WalkerProfile(BaseModel):
     pricePerWalk: int | None
     phone: str | None
     avatarUrl: str | None
+    experienceYears: int | None
+    dogSizes: list[str]
+    memberSince: str | None
     consent: Consent | None
     stats: Stats
+    reviews: list[Review]
 
 
 class AvatarResponse(BaseModel):
@@ -156,40 +190,105 @@ def _save_row(
     return first_row(rows, SAVED_MESSAGE)
 
 
-def _stats(supabase: Client, walker_id: str) -> Stats:
-    """Count the walker's finished walks and average their ratings.
+def _first_name(name: str | None) -> str | None:
+    """The first word of a display name, or None. O(len(name))."""
+    if not name or not name.strip():
+        return None
+    return name.split()[0]
 
-    O(n) in the walker's walk and rating rows: each table is read with one
-    query and both counters are computed in Python (the client offers no
-    aggregate).
+
+def _stars(rating: float) -> int:
+    """Round a rating to a whole star between 1 and 5. O(1)."""
+    return min(5, max(1, int(rating + 0.5)))
+
+
+def _sizes(value: Any) -> list[str]:
+    """The stored sizes, deduplicated in small-medium-large order. O(1)."""
+    stored = set(value or [])
+    return [size for size in SIZE_ORDER if size in stored]
+
+
+def _track_record(
+    supabase: Client, walker_id: str
+) -> tuple[Stats, list[Review]]:
+    """Count the walker's work, spread their ratings and pick the latest ones.
+
+    O(n log n) in the walker's walk and rating rows: one query per table, the
+    ratings sorted once, and the dogs and owners of the latest five fetched in
+    one batched query each (the client offers no aggregate).
 
     Args:
         supabase: The Supabase client used to read the rows.
-        walker_id: The walker whose counters are wanted.
+        walker_id: The walker whose record is wanted.
 
     Returns:
-        The ``walksDone`` count and the ``{average, count}`` rating.
+        The counters and up to ``MAX_REVIEWS`` ratings, newest first.
     """
     walks = run_query(
         supabase.table(WALK_REQUESTS_TABLE)
-        .select("id,status")
+        .select("id,status,owner_id,dog_id,duration_hours")
         .eq("walker_id", walker_id)
     )
     ratings = run_query(
-        supabase.table(RATINGS_TABLE).select("rating").eq("walker_id", walker_id)
+        supabase.table(RATINGS_TABLE)
+        .select("rating,created_at,walk_request_id")
+        .eq("walker_id", walker_id)
     )
+    done = [walk for walk in walks if walk.get("status") == "done"]
     count = len(ratings)
     average = (
         round(sum(row["rating"] for row in ratings) / count, 2) if count else None
     )
-    return Stats(
-        walksDone=sum(1 for walk in walks if walk.get("status") == "done"),
-        rating=Rating(average=average, count=count),
+    breakdown = [0] * 5
+    for row in ratings:
+        breakdown[_stars(row["rating"]) - 1] += 1
+    stats = Stats(
+        walksDone=len(done),
+        hoursWalked=round(sum(float(w.get("duration_hours") or 0) for w in done), 1),
+        clients=len({w.get("owner_id") for w in done if w.get("owner_id")}),
+        rating=Rating(average=average, count=count, breakdown=breakdown),
     )
+
+    latest = sorted(
+        ratings, key=lambda row: row.get("created_at") or "", reverse=True
+    )[:MAX_REVIEWS]
+    by_id = {walk["id"]: walk for walk in walks}
+    picked = [by_id.get(row.get("walk_request_id")) or {} for row in latest]
+    dog_ids = sorted({w["dog_id"] for w in picked if w.get("dog_id")})
+    owner_ids = sorted({w["owner_id"] for w in picked if w.get("owner_id")})
+    dogs: dict[str, dict[str, Any]] = {}
+    if dog_ids:
+        for row in run_query(
+            supabase.table(DOGS_TABLE).select("id,name").in_("id", dog_ids)
+        ):
+            dogs[row["id"]] = row
+    owners: dict[str, dict[str, Any]] = {}
+    if owner_ids:
+        for row in run_query(
+            supabase.table(OWNER_PROFILES_TABLE)
+            .select("owner_id,display_name")
+            .in_("owner_id", owner_ids)
+        ):
+            owners[row["owner_id"]] = row
+    reviews = [
+        Review(
+            rating=row["rating"],
+            at=row.get("created_at") or "",
+            dogName=(dogs.get(walk.get("dog_id")) or {}).get("name"),
+            ownerName=_first_name(
+                (owners.get(walk.get("owner_id")) or {}).get("display_name")
+            ),
+        )
+        for row, walk in zip(latest, picked)
+    ]
+    return stats, reviews
 
 
 def _view(
-    walker: User, row: dict[str, Any], stats: Stats, avatar_url: str | None
+    walker: User,
+    row: dict[str, Any],
+    record: tuple[Stats, list[Review]],
+    avatar_url: str | None,
 ) -> WalkerProfile:
     """Translate a stored row to the camelCase profile payload.
 
@@ -198,7 +297,7 @@ def _view(
     Args:
         walker: The authenticated walker.
         row: The stored profile row, possibly empty.
-        stats: The walker's activity counters.
+        record: The walker's counters and latest ratings.
         avatar_url: The signed avatar URL, or None.
 
     Returns:
@@ -206,6 +305,7 @@ def _view(
     """
     version = row.get("consent_version")
     at = row.get("consent_at")
+    stats, reviews = record
     return WalkerProfile(
         walkerId=walker.id,
         email=walker.email,
@@ -215,8 +315,12 @@ def _view(
         pricePerWalk=row.get("price_per_walk"),
         phone=row.get("phone"),
         avatarUrl=avatar_url,
+        experienceYears=row.get("experience_years"),
+        dogSizes=_sizes(row.get("dog_sizes")),
+        memberSince=row.get("created_at"),
         consent=Consent(version=version, at=at) if version is not None and at else None,
         stats=stats,
+        reviews=reviews,
     )
 
 
@@ -246,7 +350,7 @@ def get_walker_profile(
     """
     row = _profile_row(supabase, walker.id)
     avatar_url = _signed_avatar(supabase, row.get("avatar_path"))
-    return _view(walker, row, _stats(supabase, walker.id), avatar_url)
+    return _view(walker, row, _track_record(supabase, walker.id), avatar_url)
 
 
 @router.put("/walkers/{walkerId}/profile", response_model=WalkerProfile)
@@ -285,9 +389,14 @@ def save_walker_profile(
         "phone": body.phone,
         "updated_at": now.isoformat(),
     }
+    # Older clients do not send these two: leave what is stored untouched.
+    if "experienceYears" in body.model_fields_set:
+        values["experience_years"] = body.experienceYears
+    if "dogSizes" in body.model_fields_set:
+        values["dog_sizes"] = _sizes(body.dogSizes) or None
     row = _save_row(supabase, walker.id, values)
     avatar_url = _signed_avatar(supabase, row.get("avatar_path"))
-    return _view(walker, row, _stats(supabase, walker.id), avatar_url)
+    return _view(walker, row, _track_record(supabase, walker.id), avatar_url)
 
 
 def _webp(data: bytes) -> bytes:

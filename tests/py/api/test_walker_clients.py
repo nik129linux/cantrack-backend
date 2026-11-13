@@ -31,10 +31,14 @@ def walk(fake, walk_id, status, requested_time, owner_id="owner-a", dog_id="dog-
 @pytest.fixture
 def data(fake):
     fake.add_user("token-v", make_user("walker-v", "walker-v@example.com", "walker"))
-    fake.seed("owner_profiles", owner_id="owner-a", display_name="Camila", phone="+57 300 111 2222")
+    fake.seed("owner_profiles", owner_id="owner-a", display_name="Camila", phone="+57 300 111 2222",
+              avatar_path="owner-a/avatar.webp", pickup_notes="Portería, torre 3.",
+              handoff_method="doorman", emergency_name="Laura", emergency_relation="Hermana",
+              emergency_phone="+57 311 000 1111", vet_name="Clínica Pasto", vet_phone="7230000")
     fake.seed("owner_profiles", owner_id="owner-b", display_name="Andres", phone="+57 300 333 4444")
     fake.seed("dogs", id="dog-luna", owner_id="owner-a", name="Luna", embedding=[0.1] * 4,
-              profile={"size": "medium", "notes": "Pulls on the leash"})
+              breed="Labrador", notes="Mayor, camina despacio.",
+              profile={"size": "medium", "leash_trained": True, "medical_notes": "Artrosis"})
     fake.seed("dogs", id="dog-max", owner_id="owner-a", name="Max", embedding=[0.2] * 4, profile=None)
     fake.seed("dogs", id="dog-rocky", owner_id="owner-b", name="Rocky", embedding=[0.3] * 4, profile=None)
     fake.seed("dogs", id="dog-c", owner_id="owner-c", name="Toby", profile=None)
@@ -69,7 +73,8 @@ class TestList:
         assert camila == {
             "ownerId": "owner-a", "ownerName": "Camila",
             "dogs": [{"id": "dog-luna", "name": "Luna"}, {"id": "dog-max", "name": "Max"}],
-            "walksDone": 2, "upcoming": 1, "lastWalkAt": T_MID, "grossCop": 35000,
+            "walksDone": 2, "upcoming": 1, "lastWalkAt": T_MID, "nextWalkAt": T_NEXT,
+            "grossCop": 35000,
         }
 
     def test_never_leaks_emails_phones_or_embeddings(self, fake_client, data):
@@ -90,6 +95,58 @@ class TestList:
         assert clients(fake_client, token=token, walker_id=walker_id).status_code == 403
 
 
+class TestPrivateNote:
+    """The walker's own note on a dog: his memory, never the owner's."""
+
+    def note(self, client, body, owner_id="owner-a", dog_id="dog-luna",
+             token="token-w", walker_id="walker-w"):
+        return client.put(
+            f"/walkers/{walker_id}/clients/{owner_id}/dogs/{dog_id}/note",
+            json=body, headers=bearer(token),
+        )
+
+    def test_save_then_read_it_back_on_the_dog(self, fake_client, data):
+        res = self.note(fake_client, {"note": "Le gusta el parque Infantil."})
+        assert res.status_code == 200
+        assert res.json() == {"note": "Le gusta el parque Infantil."}
+        luna = detail(fake_client, "owner-a").json()["dogs"][0]
+        assert luna["note"] == "Le gusta el parque Infantil."
+
+    def test_saving_again_replaces_it(self, fake_client, data):
+        self.note(fake_client, {"note": "Primera"})
+        self.note(fake_client, {"note": "Segunda"})
+        assert detail(fake_client, "owner-a").json()["dogs"][0]["note"] == "Segunda"
+
+    @pytest.mark.parametrize("body", [{"note": None}, {"note": "   "}, {}])
+    def test_an_empty_note_clears_it(self, fake_client, data, body):
+        self.note(fake_client, {"note": "Algo"})
+        assert self.note(fake_client, body).json() == {"note": None}
+        assert detail(fake_client, "owner-a").json()["dogs"][0]["note"] is None
+
+    def test_a_dog_i_never_walked_is_404(self, fake_client, data):
+        res = self.note(fake_client, {"note": "x"}, dog_id="dog-rocky")
+        assert res.status_code == 404
+        assert res.json() == {"detail": "Not one of your clients' dogs."}
+
+    def test_an_owner_who_is_not_my_client_is_404(self, fake_client, data):
+        res = self.note(fake_client, {"note": "x"}, owner_id="owner-c", dog_id="dog-c")
+        assert res.status_code == 404
+        assert res.json() == NOT_A_CLIENT
+
+    def test_over_five_hundred_characters_is_400(self, fake_client, data):
+        assert self.note(fake_client, {"note": "x" * 501}).status_code == 400
+        assert self.note(fake_client, {"note": "x" * 500}).status_code == 200
+
+    def test_another_walker_cannot_write_on_my_client(self, fake_client, data):
+        assert self.note(fake_client, {"note": "x"}, token="token-v").status_code == 403
+
+    def test_my_note_is_mine_alone(self, fake_client, data):
+        """Another walker's note on the same dog never shows up in my detail."""
+        data.seed("walker_dog_notes", walker_id="walker-v", dog_id="dog-luna",
+                  note="Nota ajena", updated_at=T_NEW)
+        assert detail(fake_client, "owner-a").json()["dogs"][0]["note"] is None
+
+
 class TestDetail:
     def test_detail_has_care_notes_and_recent_walks(self, fake_client, data):
         res = detail(fake_client, "owner-a")
@@ -97,13 +154,48 @@ class TestDetail:
         body = res.json()
         assert body["ownerId"] == "owner-a" and body["ownerName"] == "Camila"
         assert body["dogs"] == [
-            {"id": "dog-luna", "name": "Luna", "profile": {"size": "medium", "notes": "Pulls on the leash"}},
-            {"id": "dog-max", "name": "Max", "profile": None},
+            {"id": "dog-luna", "name": "Luna", "breed": "Labrador", "notes": "Mayor, camina despacio.",
+             "profile": {"size": "medium", "temperament": None, "energy": None, "leashTrained": True,
+                         "allergies": None, "medicalNotes": "Artrosis", "vetContact": None,
+                         "emergencyContact": None},
+             "note": None},
+            {"id": "dog-max", "name": "Max", "breed": None, "notes": None, "profile": None, "note": None},
         ]
         assert [w["id"] for w in body["walks"]] == ["a3", "a2", "a1"]
         assert body["walks"][1] == {"id": "a2", "dogName": "Max", "status": "done",
-                                    "requestedTime": T_MID, "priceCop": 15000}
+                                    "requestedTime": T_MID, "priceCop": 15000, "rating": None}
         assert "embedding" not in res.text
+
+    def test_the_owners_questionnaire_arrives_in_the_wire_shape(self, fake_client, data):
+        """The screen reads camelCase; the column stores snake_case."""
+        luna = detail(fake_client, "owner-a").json()["dogs"][0]
+        assert luna["profile"]["leashTrained"] is True
+        assert luna["profile"]["medicalNotes"] == "Artrosis"
+
+    def test_the_stars_the_owner_left_come_with_each_walk(self, fake_client, data):
+        data.seed("walk_ratings", id="r1", walk_request_id="a1", walker_id="walker-w",
+                  rating=5.0, created_at=T_OLD)
+        walks = {w["id"]: w["rating"] for w in detail(fake_client, "owner-a").json()["walks"]}
+        assert walks == {"a3": None, "a2": None, "a1": 5.0}
+
+    def test_the_owner_photo_is_a_signed_url(self, fake_client, data):
+        data.storage.objects[("avatars", "owner-a/avatar.webp")] = b"webp"
+        url = detail(fake_client, "owner-a").json()["ownerAvatarUrl"]
+        assert url is not None and "owner-a/avatar.webp" in url
+
+    def test_a_missing_photo_is_just_null(self, fake_client, data):
+        assert detail(fake_client, "owner-a").json()["ownerAvatarUrl"] is None
+
+    def test_the_door_step_card_follows_the_phone_rule(self, fake_client, data):
+        care = detail(fake_client, "owner-a").json()["care"]
+        assert care == {
+            "pickupNotes": "Portería, torre 3.", "handoff": "doorman",
+            "emergencyName": "Laura", "emergencyRelation": "Hermana",
+            "emergencyPhone": "+57 311 000 1111",
+            "vetName": "Clínica Pasto", "vetPhone": "7230000",
+        }
+        # owner-b has only a done walk, so nothing about their door is shared.
+        assert detail(fake_client, "owner-b").json()["care"] is None
 
     def test_phone_only_while_a_walk_is_assigned_or_live(self, fake_client, data):
         assert detail(fake_client, "owner-a").json()["phone"] == "+57 300 111 2222"

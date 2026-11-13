@@ -29,8 +29,12 @@ def put_profile(client, body, token="token-a", owner="owner-a"):
 class TestProfile:
     def test_a_new_owner_has_an_empty_profile(self, fake_client):
         assert get_profile(fake_client).json() == {
-            "ownerId": "owner-a", "email": "owner-a@example.com", "displayName": None, "phone": None,
-            "avatarUrl": None, "home": None, "consent": None, "stats": {"dogs": 0, "walksDone": 0},
+            "ownerId": "owner-a", "email": "owner-a@example.com", "emailVerified": False,
+            "memberSince": "2026-09-01T00:00:00+00:00", "displayName": None, "phone": None,
+            "avatarUrl": None, "home": None, "pickupNotes": None, "handoff": None,
+            "emergency": None, "vet": None, "paymentMethod": None,
+            "notifications": {"walkStarted": True, "report": True, "walkDone": True, "offers": True},
+            "consent": None, "stats": {"dogs": 0, "walksDone": 0}, "dogs": [], "walkers": [],
         }
 
     def test_save_and_read_back(self, fake_client, fake):
@@ -72,6 +76,72 @@ class TestProfile:
         fake.seed("walk_requests", id="w1", owner_id="owner-a", status="done")
         fake.seed("walk_requests", id="w2", owner_id="owner-a", status="open")
         assert get_profile(fake_client).json()["stats"] == {"dogs": 1, "walksDone": 1}
+
+
+class TestProfileSections:
+    def test_pickup_emergency_vet_payment_and_notifications_round_trip(self, fake_client):
+        body = {
+            "pickupNotes": "  Portería, torre 3, apto 502  ", "handoff": "doorman",
+            "emergency": {"name": "Laura", "relation": "Hermana", "phone": "+57 311 000 1111"},
+            "vet": {"name": "Clínica Pasto Vet", "phone": "7230000"},
+            "paymentMethod": "nequi",
+            "notifications": {"walkStarted": False, "report": True, "walkDone": True, "offers": False},
+        }
+        assert put_profile(fake_client, body).status_code == 200
+        profile = get_profile(fake_client).json()
+        assert profile["pickupNotes"] == "Portería, torre 3, apto 502"
+        assert profile["handoff"] == "doorman"
+        assert profile["emergency"] == body["emergency"]
+        assert profile["vet"] == body["vet"]
+        assert profile["paymentMethod"] == "nequi"
+        assert profile["notifications"] == body["notifications"]
+
+    def test_a_section_save_leaves_the_others_alone(self, fake_client):
+        put_profile(fake_client, {"displayName": "Camila", "paymentMethod": "cash"})
+        put_profile(fake_client, {"vet": {"name": "Vet"}})
+        profile = get_profile(fake_client).json()
+        assert profile["displayName"] == "Camila" and profile["paymentMethod"] == "cash"
+
+    def test_null_clears_a_section(self, fake_client):
+        put_profile(fake_client, {"emergency": {"name": "Laura", "phone": "3110001111"}})
+        put_profile(fake_client, {"emergency": None})
+        assert get_profile(fake_client).json()["emergency"] is None
+
+    @pytest.mark.parametrize("body", [
+        {"handoff": "drone"}, {"paymentMethod": "bitcoin"}, {"pickupNotes": "x" * 301},
+        {"emergency": {"name": "", "phone": "3110001111"}},
+        {"emergency": {"name": "Laura", "phone": "no"}},
+        {"vet": {"name": "x" * 81}},
+    ])
+    def test_section_validation(self, fake_client, body):
+        assert put_profile(fake_client, body).status_code == 400
+
+    def test_dogs_and_known_walkers(self, fake_client, fake):
+        fake.seed("dogs", id="d1", owner_id="owner-a", name="Luna", breed="Bichón")
+        fake.seed("walker_profiles", walker_id="walker-1", display_name="Juan")
+        fake.seed("walk_requests", id="w1", owner_id="owner-a", status="done", walker_id="walker-1")
+        fake.seed("walk_requests", id="w2", owner_id="owner-a", status="done", walker_id="walker-1")
+        profile = get_profile(fake_client).json()
+        assert profile["dogs"] == [{"id": "d1", "name": "Luna", "breed": "Bichón"}]
+        assert profile["walkers"] == [{"walkerId": "walker-1", "name": "Juan", "walks": 2, "favorite": False}]
+
+
+class TestFavorites:
+    def mark(self, client, walker, favorite=True, token="token-a"):
+        return client.put(f"/owners/owner-a/favorites/{walker}", json={"favorite": favorite}, headers=bearer(token))
+
+    def test_mark_and_unmark_a_known_walker(self, fake_client, fake):
+        fake.seed("walker_profiles", walker_id="walker-1", display_name="Juan")
+        fake.seed("walk_requests", id="w1", owner_id="owner-a", status="done", walker_id="walker-1")
+        assert self.mark(fake_client, "walker-1").json()["walkers"][0]["favorite"] is True
+        assert self.mark(fake_client, "walker-1").json()["walkers"][0]["favorite"] is True
+        assert self.mark(fake_client, "walker-1", favorite=False).json()["walkers"][0]["favorite"] is False
+
+    def test_a_stranger_cannot_be_marked(self, fake_client):
+        assert self.mark(fake_client, "walker-x").status_code == 404
+
+    def test_only_the_owner(self, fake_client):
+        assert self.mark(fake_client, "walker-1", token="token-b").status_code == 403
 
 
 class TestAvatar:

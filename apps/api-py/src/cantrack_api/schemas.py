@@ -106,6 +106,8 @@ class SignupBody(BaseModel):
         min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH
     )
     role: UserRole
+    fullName: str | None = Field(default=None, min_length=1, max_length=80)
+    phone: str | None = Field(default=None, pattern=r"^\+?[0-9][0-9 ]{6,19}$")
 
     @model_validator(mode="after")
     def _password_policy(self) -> "SignupBody":

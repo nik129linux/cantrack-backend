@@ -104,6 +104,7 @@ class TestHomeEmpty:
             "today": {"walks": 0, "grossCop": 0, "commissionCop": 0, "netCop": 0},
             "rating": {"average": None, "count": 0},
             "openNearby": 0,
+            "nearby": [],
             "pendingOffers": 0,
         }
 
@@ -133,6 +134,7 @@ class TestHome:
         assert get_home(fake_client).json()["nextWalk"] == {
             "id": "w-soon", "dogName": "Max", "ownerName": "Camila",
             "requestedTime": SOON, "durationHours": 0.75, "priceCop": 24000,
+            "stale": False,
         }
 
     def test_without_an_offer_row_the_price_is_the_fare(self, fake_client, data):
@@ -186,6 +188,50 @@ class TestHome:
         walk(data, "o-near", "open", walker_id=None)
         assert get_home(fake_client).json()["openNearby"] == 0
 
+    def test_an_upcoming_walk_wins_over_one_whose_slot_passed(self, fake_client, data):
+        walk(data, "w-old", "assigned", "2026-09-25T15:00:00+00:00")
+        walk(data, "w-soon", "assigned", SOON)
+        body = get_home(fake_client).json()["nextWalk"]
+        assert body["id"] == "w-soon"
+        assert body["stale"] is False
+
+    def test_only_overdue_walks_show_the_latest_flagged_stale(self, fake_client, data):
+        walk(data, "w-older", "assigned", "2026-09-20T15:00:00+00:00")
+        walk(data, "w-old", "assigned", "2026-09-25T15:00:00+00:00")
+        body = get_home(fake_client).json()["nextWalk"]
+        assert body["id"] == "w-old"
+        assert body["stale"] is True
+
+    def test_a_walk_still_inside_its_slot_is_not_stale(self, fake_client, data):
+        # Started 30 min ago, lasts 45 min: still on time.
+        walk(data, "w-now", "assigned", (FIXED_NOW - timedelta(minutes=30)).isoformat())
+        assert get_home(fake_client).json()["nextWalk"]["stale"] is False
+
+    def test_nearby_previews_the_three_closest_while_online(self, fake_client, data):
+        position(data)
+        walk(data, "o-1", "open", walker_id=None, pickup=(1.2150, -77.2811), price=18000)
+        walk(data, "o-2", "open", walker_id=None, pickup=(1.2250, -77.2811), dog_id="dog-max")
+        walk(data, "o-0", "open", walker_id=None, pickup=PASTO)
+        walk(data, "o-3", "open", walker_id=None, pickup=(1.2280, -77.2811))
+        walk(data, "o-far", "open", walker_id=None, pickup=(1.2500, -77.2811))
+        offer(data, "o-1", 19000)
+        body = get_home(fake_client).json()
+        assert body["openNearby"] == 4
+        assert [card["id"] for card in body["nearby"]] == ["o-0", "o-1", "o-2"]
+        first, second, third = body["nearby"]
+        assert first["distanceKm"] == 0.0 and first["offered"] is False
+        assert second == {
+            "id": "o-1", "dogName": "Luna", "requestedTime": SOON, "durationHours": 0.75,
+            "priceCop": 18000, "distanceKm": 0.2, "offered": True,
+        }
+        assert third["dogName"] == "Max"
+        assert "Camila" not in str(body["nearby"])
+
+    def test_nearby_is_empty_while_offline(self, fake_client, data):
+        position(data, seconds_ago=600)
+        walk(data, "o-near", "open", walker_id=None)
+        assert get_home(fake_client).json()["nearby"] == []
+
     def test_pending_offers_are_mine_on_still_open_requests(self, fake_client, data):
         walk(data, "o1", "open", walker_id=None)
         walk(data, "o2", "open", walker_id=None)
@@ -197,6 +243,19 @@ class TestHome:
 
 
 class TestAvailability:
+    def test_reading_the_switch_follows_the_heartbeat(self, fake_client, data):
+        url = "/walkers/walker-w/availability"
+        assert fake_client.get(url, headers=bearer("token-w")).json() == {"online": False, "updatedAt": None}
+        position(data, seconds_ago=30)
+        body = fake_client.get(url, headers=bearer("token-w")).json()
+        assert body["online"] is True and body["updatedAt"] is not None
+        data.tables["walker_positions"].clear()
+        position(data, seconds_ago=300)
+        assert fake_client.get(url, headers=bearer("token-w")).json() == {"online": False, "updatedAt": None}
+
+    def test_another_walker_cannot_read_my_switch(self, fake_client, data):
+        assert fake_client.get("/walkers/walker-w/availability", headers=bearer("token-v")).status_code == 403
+
     def test_going_online_stores_my_position_now(self, fake_client, data):
         res = availability(fake_client, {"online": True, "lat": 1.21, "lng": -77.28})
         assert res.status_code == 200
@@ -255,6 +314,9 @@ class TestEarnings:
         assert {k: body[k] for k in body if k != "byDay"} == {
             "period": "week", "from": "2026-09-28", "to": "2026-10-04", "simulated": True,
             "commissionPct": 10, "walks": 2, "grossCop": 35000, "commissionCop": 3500, "netCop": 31500,
+            "previous": {"walks": 1, "netCop": 27000},
+            "bestDay": {"date": "2026-09-30", "netCop": 18000},
+            "avgPerWalkCop": 15750, "goalCop": None, "dayWalks": None,
         }
         assert [day["date"] for day in body["byDay"]] == [
             "2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04",
@@ -276,3 +338,44 @@ class TestEarnings:
 
     def test_unknown_period_is_400(self, fake_client, history):
         assert earnings(fake_client, "year").status_code == 400
+
+    def test_day_lists_only_my_finished_walks_of_today(self, fake_client, history):
+        walk(history, "today-pm", "done", TODAY_6PM, dog_id="dog-max", price=10000)
+        body = earnings(fake_client, "day").json()
+        assert body["dayWalks"] == [
+            {"id": "today", "dogName": "Luna", "requestedTime": TODAY_10AM, "netCop": 18000},
+            {"id": "today-pm", "dogName": "Max", "requestedTime": TODAY_6PM, "netCop": 9000},
+        ]
+        assert body["previous"] == {"walks": 0, "netCop": 0}
+
+    def test_month_compares_with_the_previous_month(self, fake_client, history):
+        body = earnings(fake_client, "month").json()
+        assert body["previous"] == {"walks": 1, "netCop": 36000}
+        assert body["bestDay"] == {"date": "2026-09-27", "netCop": 27000}
+        assert body["avgPerWalkCop"] == 58500 // 3
+
+    def test_without_walks_there_is_no_best_day_and_no_average(self, fake_client, data):
+        body = earnings(fake_client).json()
+        assert (body["bestDay"], body["avgPerWalkCop"], body["netCop"]) == (None, 0, 0)
+
+
+def set_goal(client, body, token="token-w", walker_id="walker-w"):
+    return client.put(f"/walkers/{walker_id}/goal", json=body, headers=bearer(token))
+
+
+class TestGoal:
+    def test_saves_the_goal_and_earnings_reads_it_back(self, fake_client, data):
+        res = set_goal(fake_client, {"goalCop": 120000})
+        assert res.status_code == 200 and res.json() == {"goalCop": 120000}
+        assert earnings(fake_client).json()["goalCop"] == 120000
+
+    @pytest.mark.parametrize("goal", [9999, 5_000_001, -1])
+    def test_out_of_range_is_400(self, fake_client, data, goal):
+        assert set_goal(fake_client, {"goalCop": goal}).status_code == 400
+
+    def test_another_walker_gets_403(self, fake_client, data):
+        assert set_goal(fake_client, {"goalCop": 50000}, token="token-v").status_code == 403
+
+    def test_without_a_profile_is_409(self, fake_client, data):
+        data.tables["walker_profiles"].clear()
+        assert set_goal(fake_client, {"goalCop": 50000}).status_code == 409

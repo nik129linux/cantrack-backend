@@ -70,10 +70,17 @@ class TestLists:
         item = self.tab(fake_client, "past").json()["items"][0]
         assert item == {"id": "d1", "status": "done", "dogId": "dog-luna", "dogName": "Luna",
                         "walkerId": "walker-w", "walkerName": "Mateo", "requestedTime": T10,
-                        "durationHours": 1.0, "priceCop": 18000, "canRate": True, "hasReport": False}
+                        "durationHours": 1.0, "priceCop": 18000, "canRate": True, "hasReport": False,
+                        "distanceKm": None, "durationMin": None, "rating": None}
         base.seed("walk_ratings", walk_request_id="d1", walker_id="walker-w", rating=5,
                   created_at="2026-10-01T00:00:00+00:00")
-        assert self.tab(fake_client, "past").json()["items"][0]["canRate"] is False
+        rated = self.tab(fake_client, "past").json()["items"][0]
+        assert rated["canRate"] is False and rated["rating"] == 5
+
+    def test_item_carries_the_report_distance_and_minutes(self, fake_client, base):
+        seed_walk(base, "d1", "done", report_status="ok", report_distance_km=2.4, report_duration_min=55)
+        item = self.tab(fake_client, "past").json()["items"][0]
+        assert (item["hasReport"], item["distanceKm"], item["durationMin"]) == (True, 2.4, 55)
 
     def test_pagination(self, fake_client, base):
         for day in range(1, 6):
@@ -94,6 +101,41 @@ class TestLists:
         assert self.tab(fake_client, "past", token="token-b").status_code == 403
 
 
+class TestSummary:
+    """FIXED_NOW is 2026-10-01T00:00Z, which is still 30 Sep in Bogota (UTC-5)."""
+
+    def get(self, client, token="token-a", owner="owner-a"):
+        return client.get(f"/owners/{owner}/walks/summary", headers=bearer(token))
+
+    def test_month_totals_and_tab_counts(self, fake_client, base):
+        seed_walk(base, "s1", "done", "2026-09-20T10:00:00+00:00", report_distance_km=2.5, report_duration_min=50)
+        seed_walk(base, "s2", "done", "2026-09-28T10:00:00+00:00")  # no report: booked hour counts
+        seed_walk(base, "old", "done", "2026-08-30T10:00:00+00:00", report_distance_km=9.0, report_duration_min=90)
+        seed_walk(base, "c1", "cancelled", "2026-09-21T10:00:00+00:00", walker_id=None)
+        seed_walk(base, "u1", "assigned")
+        seed_walk(base, "l1", "in_walk")
+        seed_walk(base, "o1", "open", walker_id=None)
+        assert self.get(fake_client).json() == {
+            "month": {"walks": 2, "km": 2.5, "minutes": 110},
+            "counts": {"upcoming": 1, "active": 1, "past": 4},
+        }
+
+    def test_month_is_the_bogota_month(self, fake_client, base):
+        # 1 Oct 02:00 UTC is still 30 Sep in Bogota, so it belongs to this month.
+        seed_walk(base, "edge", "done", "2026-10-01T02:00:00+00:00", report_distance_km=1.0, report_duration_min=30)
+        assert self.get(fake_client).json()["month"] == {"walks": 1, "km": 1.0, "minutes": 30}
+
+    def test_empty(self, fake_client, base):
+        assert self.get(fake_client).json() == {
+            "month": {"walks": 0, "km": 0.0, "minutes": 0},
+            "counts": {"upcoming": 0, "active": 0, "past": 0},
+        }
+
+    @pytest.mark.parametrize("token", ["token-b", "token-w"])
+    def test_only_the_owner(self, fake_client, base, token):
+        assert self.get(fake_client, token=token).status_code == 403
+
+
 class TestDetail:
     def detail(self, client, walk_id="w1", token="token-a"):
         return client.get(f"/bidding/requests/{walk_id}", headers=bearer(token))
@@ -105,6 +147,8 @@ class TestDetail:
         base.seed("walk_timeline", walk_request_id="w1", kind="check_out", at="2026-10-05T11:00:00+00:00", payload={})
         base.seed("walk_timeline", walk_request_id="w1", kind="check_in", at="2026-10-05T10:00:00+00:00", payload={})
         body = self.detail(fake_client).json()
+        assert body["id"] == "w1" and body["status"] == "done"
+        assert body["requestedTime"] == T10 and body["durationHours"] == 1.0
         assert body["dog"] == {"id": "dog-luna", "name": "Luna"}
         assert body["walker"] == {"id": "walker-w", "name": "Mateo", "allTimeRating": None, "ratingCount": 0}
         assert body["priceCop"] == 18000
