@@ -1,0 +1,2016 @@
+{
+  "info": {
+    "name": "CanTrack — Walker Glass",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "The eight new walker/owner endpoints (raise, favourites, walk summary, availability, dog note, weekly goal, walking route): Happy path then Exploits then Cleanup; every exploit must get the 4xx in its name. Environment: baseUrl, ownerToken, ownerId, otherOwnerToken, otherOwnerId, walkerToken, walkerId, dogId (a dog owned by the owner). Run top to bottom: the happy path builds the data the exploits and cleanup need (walk online -> open request -> raise -> accept -> pick -> assigned walk), the exploits only reject, and the cleanup unfavourites, clears the note, cancels the request and restores availability/goal."
+  },
+  "item": [
+    {
+      "name": "Happy path",
+      "item": [
+        {
+          "name": "Walker reads their availability",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "availability"
+              ]
+            },
+            "description": "Baseline for the online switch: the later cleanup restores exactly the state the walker had before the collection ran."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"online is a boolean\", function () { pm.expect(pm.response.json().online).to.be.a(\"boolean\"); });",
+                  "pm.environment.set(\"availabilityWasOnline\", pm.response.json().online === true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker goes online (setup for bidding)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"online\": true, \"lat\": 1.2076, \"lng\": -77.2768}"
+            },
+            "description": "Going online upserts the heartbeat row (walker_positions) and needs bounded coordinates. The walker must be online with a fresh heartbeat for the offer on the request below to be allowed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"online\", function () { pm.expect(pm.response.json().online).to.eql(true); });",
+                  "pm.test(\"updatedAt set\", function () { pm.expect(pm.response.json().updatedAt).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner posts a walk request (setup for raise and pick)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"dogId\": \"{{dogId}}\", \"windowStart\": \"{{raiseWindowStart}}\", \"durationMinutes\": 60, \"priceCop\": 20000, \"pickupLat\": 1.2097, \"pickupLng\": -77.2782}"
+            },
+            "description": "The owner opens a request for their own dog five days ahead, next to the walker's position (inside the 2 km bidding radius). This request is what the walker accepts and the owner picks, which makes the walker one of the owner's clients; the cleanup cancels it."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set(\"raiseWindowStart\", new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", function () { pm.response.to.have.status(201); });",
+                  "pm.test(\"open\", function () { pm.expect(pm.response.json().status).to.eql(\"open\"); });",
+                  "pm.test(\"fare stored\", function () { pm.expect(pm.response.json().priceCop).to.eql(20000); });",
+                  "pm.environment.set(\"requestId\", pm.response.json().id);",
+                  "pm.environment.set(\"fareCop\", pm.response.json().priceCop);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner posts a second request for the raise tests",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"dogId\": \"{{dogId}}\", \"windowStart\": \"{{raiseWindowStart}}\", \"durationMinutes\": 60, \"priceCop\": 20000, \"pickupLat\": 1.2097, \"pickupLng\": -77.2782}"
+            },
+            "description": "Raise only works while a request is open, and the first request gets picked below, so this second open request is what the raise happy path and its exploits use; the cleanup cancels it."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set(\"raiseWindowStart\", new Date(Date.now() + 6 * 24 * 60 * 60 * 1000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", function () { pm.response.to.have.status(201); });",
+                  "pm.test(\"open\", function () { pm.expect(pm.response.json().status).to.eql(\"open\"); });",
+                  "pm.environment.set(\"raiseRequestId\", pm.response.json().id);",
+                  "pm.environment.set(\"raiseFareCop\", pm.response.json().priceCop);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner raises the fare",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{raiseRequestId}}/raise",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{raiseRequestId}}",
+                "raise"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"priceCop\": 22000}"
+            },
+            "description": "Only the owning owner, only while open, only upwards: 20000 -> 22000 and the offer window restarts."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"new fare\", function () { pm.expect(pm.response.json().priceCop).to.eql(22000); });",
+                  "pm.test(\"deadline reopened\", function () { pm.expect(pm.response.json().deadlineAt).to.be.a(\"string\"); });",
+                  "pm.environment.set(\"raiseFareCop\", 22000);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker accepts the fare (setup for pick)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "offers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"kind\": \"accept\", \"etaMin\": 10}"
+            },
+            "description": "An accept takes the owner's fare (the first request is still at 20000; the raise went to the second request). Setup for the pick that makes the walker one of the owner's clients."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", function () { pm.response.to.have.status(201); });",
+                  "pm.test(\"accept kind\", function () { pm.expect(pm.response.json().kind).to.eql(\"accept\"); });",
+                  "pm.test(\"price is the fare\", function () { pm.expect(pm.response.json().priceCop).to.eql(Number(pm.environment.get(\"fareCop\"))); });",
+                  "pm.environment.set(\"offerId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner picks the walker",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/pick",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "pick"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"offerId\": \"{{offerId}}\"}"
+            },
+            "description": "The assigned walk is what turns the owner into the walker's client and the walker into a walker the owner can favourite."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"assigned\", function () { pm.expect(pm.response.json().status).to.eql(\"assigned\"); });",
+                  "pm.test(\"walker named\", function () { pm.expect(pm.response.json().walkerId).to.eql(pm.environment.get(\"walkerId\")); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker reads their clients",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "clients"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"list\", function () { pm.expect(pm.response.json()).to.be.an(\"array\"); });",
+                  "pm.test(\"the owner is a client\", function () { pm.expect(pm.response.json().some(function (c) { return c.ownerId === pm.environment.get(\"ownerId\"); })).to.eql(true); });",
+                  "pm.test(\"no emails\", function () { pm.expect(pm.response.text()).to.not.include(\"@\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker reads the client's detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/clients/{{ownerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "clients",
+                "{{ownerId}}"
+              ]
+            },
+            "description": "Baseline read that captures the walker's existing private note on the dog, so the cleanup can put back exactly what was there."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"owner id\", function () { pm.expect(pm.response.json().ownerId).to.eql(pm.environment.get(\"ownerId\")); });",
+                  "pm.test(\"dog listed\", function () { pm.expect(pm.response.json().dogs.some(function (d) { return d.id === pm.environment.get(\"dogId\"); })).to.eql(true); });",
+                  "const dog = pm.response.json().dogs.find(function (d) { return d.id === pm.environment.get(\"dogId\"); }); pm.environment.set(\"noteBaseline\", dog && dog.note ? dog.note : \"\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker reads their earnings goal",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/earnings?period=week",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "earnings?period=week"
+              ]
+            },
+            "description": "Baseline read for the weekly goal (the earnings answer carries goalCop), so the cleanup can restore the value the walker had."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"period\", function () { pm.expect(pm.response.json().period).to.eql(\"week\"); });",
+                  "pm.environment.set(\"goalBaseline\", pm.response.json().goalCop === null ? \"\" : String(pm.response.json().goalCop));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner reads the walk summary",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/walks/summary",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "walks",
+                "summary"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"month totals\", function () { const b = pm.response.json().month; pm.expect(b).to.have.property(\"walks\"); pm.expect(b).to.have.property(\"km\"); pm.expect(b).to.have.property(\"minutes\"); });",
+                  "pm.test(\"tab counts\", function () { const c = pm.response.json().counts; pm.expect(c).to.have.property(\"upcoming\"); pm.expect(c).to.have.property(\"active\"); pm.expect(c).to.have.property(\"past\"); });",
+                  "pm.test(\"the assigned walk counts as upcoming\", function () { pm.expect(pm.response.json().counts.upcoming).to.be.at.least(1); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner favourites the walker",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/favorites/{{walkerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "favorites",
+                "{{walkerId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"favorite\": true}"
+            },
+            "description": "Works here because the walker took one of the owner's walks (the pick above); the exploits folder shows the 404 for a stranger."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"walker is a favourite\", function () { pm.expect(pm.response.json().walkers.some(function (w) { return w.walkerId === pm.environment.get(\"walkerId\") && w.favorite === true; })).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker writes a private note on the dog",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/clients/{{ownerId}}/dogs/{{dogId}}/note",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "clients",
+                "{{ownerId}}",
+                "dogs",
+                "{{dogId}}",
+                "note"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"note\": \"Firulais: el portero no abre antes de las 7.\"}"
+            },
+            "description": "The dog is one the walker walked (the assigned request), so the note is accepted; no owner ever reads it back."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"note stored\", function () { pm.expect(pm.response.json().note).to.eql(\"Firulais: el portero no abre antes de las 7.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker sets a weekly goal",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/goal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "goal"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"goalCop\": 30000}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"goal stored\", function () { pm.expect(pm.response.json().goalCop).to.eql(30000); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker reads the walking route",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/walking-route?fromLat=1.2076&fromLng=-77.2768&toLat=1.2136&toLng=-77.2811",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "walking-route"
+              ],
+              "query": [
+                {
+                  "key": "fromLat",
+                  "value": "1.2076"
+                },
+                {
+                  "key": "fromLng",
+                  "value": "-77.2768"
+                },
+                {
+                  "key": "toLat",
+                  "value": "1.2136"
+                },
+                {
+                  "key": "toLng",
+                  "value": "-77.2811"
+                }
+              ]
+            },
+            "description": "Walker's pin to the owner's home pin, both inside Pasto. A routing failure answers 200 with source straight, never an error."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"distance is a number\", function () { pm.expect(pm.response.json().distanceKm).to.be.a(\"number\"); });",
+                  "pm.test(\"geometry drawn\", function () { pm.expect(pm.response.json().geometry).to.be.an(\"array\").with.length.above(0); });",
+                  "pm.test(\"steps is a list\", function () { pm.expect(pm.response.json().steps).to.be.an(\"array\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Exploits",
+      "item": [
+        {
+          "name": "Raise with no token → 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{raiseRequestId}}/raise",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{raiseRequestId}}",
+                "raise"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"priceCop\": 30000}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Another owner raises the fare → 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherOwnerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{raiseRequestId}}/raise",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{raiseRequestId}}",
+                "raise"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"priceCop\": 30000}"
+            },
+            "description": "IDOR: otherOwnerToken against the owner's request id. _owned_request answers 403 before any state changes."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });",
+                  "pm.test(\"not your walk\", function () { pm.expect(pm.response.json().detail).to.include(\"Not your walk request.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Raise that is not higher → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{raiseRequestId}}/raise",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{raiseRequestId}}",
+                "raise"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"priceCop\": 22000}"
+            },
+            "description": "22000 is the fare after the happy-path raise on the still-open second request, and only an upwards change is allowed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"must be higher\", function () { pm.expect(pm.response.json().detail).to.include(\"higher\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Raise with a negative price → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{raiseRequestId}}/raise",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{raiseRequestId}}",
+                "raise"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"priceCop\": -5}"
+            },
+            "description": "priceCop must be between 0 and 1000000; the validation handler answers every rejected body with a 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Favourite with no token → 401",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/favorites/{{walkerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "favorites",
+                "{{walkerId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"favorite\": true}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Another owner sets favourites → 403",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherOwnerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/favorites/{{walkerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "favorites",
+                "{{walkerId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"favorite\": true}"
+            },
+            "description": "IDOR: otherOwnerToken against the owner's id; owner_from_path refuses before any query."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });",
+                  "pm.test(\"own account only\", function () { pm.expect(pm.response.json().detail).to.include(\"your own account\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Favourite a walker who never walked → 404",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/favorites/{{otherOwnerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "favorites",
+                "{{otherOwnerId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"favorite\": true}"
+            },
+            "description": "Happy path is impossible for a stranger: only a walker who already took one of the owner's walks can be marked, so the documented 404 (UNKNOWN_WALKER_MESSAGE) is asserted instead. otherOwnerId is a real account that never walked for the owner."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"walker not found\", function () { pm.expect(pm.response.json().detail).to.include(\"Walker not found.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Favourite body without a boolean → 400",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/favorites/{{walkerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "favorites",
+                "{{walkerId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"favorite\": \"maybe\"}"
+            },
+            "description": "favorite must be a boolean and Pydantic does not coerce this string; the validation handler answers 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Summary with no token → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/walks/summary",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "walks",
+                "summary"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Another owner reads the summary → 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherOwnerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/walks/summary",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "walks",
+                "summary"
+              ]
+            },
+            "description": "IDOR: otherOwnerToken against the owner's id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker reads an owner's summary → 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/walks/summary",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "walks",
+                "summary"
+              ]
+            },
+            "description": "Role check: the walker token against the owner's id is refused before any query."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });",
+                  "pm.test(\"owners only\", function () { pm.expect(pm.response.json().detail).to.include(\"Only owners\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Availability with no token → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "availability"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Another account flips the availability → 403",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherOwnerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"online\": false}"
+            },
+            "description": "IDOR: otherOwnerToken against the walker's id; walker_from_path refuses an owner before any query."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Going online without coordinates → 400",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"online\": true}"
+            },
+            "description": "Going online needs bounded coordinates; the switch without them is a 400 and leaves the walker offline."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"location message\", function () { pm.expect(pm.response.json().detail).to.include(\"lat must be between\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Note with no token → 401",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/clients/{{ownerId}}/dogs/{{dogId}}/note",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "clients",
+                "{{ownerId}}",
+                "dogs",
+                "{{dogId}}",
+                "note"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"note\": \"x\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Another owner writes the walker's note → 403",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherOwnerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/clients/{{ownerId}}/dogs/{{dogId}}/note",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "clients",
+                "{{ownerId}}",
+                "dogs",
+                "{{dogId}}",
+                "note"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"note\": \"x\"}"
+            },
+            "description": "IDOR: otherOwnerToken against the walker's id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Note on a dog the walker never walked → 404",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/clients/{{ownerId}}/dogs/00000000-0000-0000-0000-000000000000/note",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "clients",
+                "{{ownerId}}",
+                "dogs",
+                "00000000-0000-0000-0000-000000000000",
+                "note"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"note\": \"x\"}"
+            },
+            "description": "A dog counts as the walker's client's only when one of his own walks with that owner was for it; an unknown dog id gets the documented 404."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"not their clients dog\", function () { pm.expect(pm.response.json().detail).to.include(\"Not one of your clients\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Note over 500 characters → 400",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/clients/{{ownerId}}/dogs/{{dogId}}/note",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "clients",
+                "{{ownerId}}",
+                "dogs",
+                "{{dogId}}",
+                "note"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"note\": \"{{longNote}}\"}"
+            },
+            "description": "The note is capped at 500 characters (MAX_NOTE_LENGTH); the validation handler answers 400."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set(\"longNote\", new Array(502).join(\"x\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Goal with no token → 401",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/goal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "goal"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"goalCop\": 30000}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Another owner sets the goal → 403",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherOwnerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/goal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "goal"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"goalCop\": 30000}"
+            },
+            "description": "IDOR: otherOwnerToken against the walker's id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Goal below the minimum → 400",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/goal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "goal"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"goalCop\": 9999}"
+            },
+            "description": "goalCop must be between 10000 and 5000000 COP."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"range message\", function () { pm.expect(pm.response.json().detail).to.include(\"10000\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Route with no token → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/walking-route?fromLat=1.2076&fromLng=-77.2768&toLat=1.2136&toLng=-77.2811",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "walking-route"
+              ],
+              "query": [
+                {
+                  "key": "fromLat",
+                  "value": "1.2076"
+                },
+                {
+                  "key": "fromLng",
+                  "value": "-77.2768"
+                },
+                {
+                  "key": "toLat",
+                  "value": "1.2136"
+                },
+                {
+                  "key": "toLng",
+                  "value": "-77.2811"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Another owner asks for the route → 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherOwnerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/walking-route?fromLat=1.2076&fromLng=-77.2768&toLat=1.2136&toLng=-77.2811",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "walking-route"
+              ],
+              "query": [
+                {
+                  "key": "fromLat",
+                  "value": "1.2076"
+                },
+                {
+                  "key": "fromLng",
+                  "value": "-77.2768"
+                },
+                {
+                  "key": "toLat",
+                  "value": "1.2136"
+                },
+                {
+                  "key": "toLng",
+                  "value": "-77.2811"
+                }
+              ]
+            },
+            "description": "IDOR: otherOwnerToken against the walker's id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Route point outside Pasto → 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/walking-route?fromLat=10&fromLng=-77&toLat=1.2136&toLng=-77.2811",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "walking-route"
+              ],
+              "query": [
+                {
+                  "key": "fromLat",
+                  "value": "10"
+                },
+                {
+                  "key": "fromLng",
+                  "value": "-77"
+                },
+                {
+                  "key": "toLat",
+                  "value": "1.2136"
+                },
+                {
+                  "key": "toLng",
+                  "value": "-77.2811"
+                }
+              ]
+            },
+            "description": "Both points must be inside Pasto; the endpoint takes no body, so this query pair is its bad-input 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"inside Pasto\", function () { pm.expect(pm.response.json().detail).to.include(\"inside Pasto\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Cleanup",
+      "item": [
+        {
+          "name": "Owner unfavourites the walker",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/owners/{{ownerId}}/favorites/{{walkerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "owners",
+                "{{ownerId}}",
+                "favorites",
+                "{{walkerId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"favorite\": false}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"favourite removed\", function () { pm.expect(pm.response.json().walkers.some(function (w) { return w.walkerId === pm.environment.get(\"walkerId\") && w.favorite === true; })).to.eql(false); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker clears the private note",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/clients/{{ownerId}}/dogs/{{dogId}}/note",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "clients",
+                "{{ownerId}}",
+                "dogs",
+                "{{dogId}}",
+                "note"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{noteRestoreBody}}"
+            },
+            "description": "Puts back the note captured in the client-detail read (null clears). Runs before the cancel below, while the walk is still assigned and the dog is still the walker's client's."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.environment.get(\"noteBaseline\"); pm.environment.set(\"noteRestoreBody\", base ? JSON.stringify({ note: base }) : JSON.stringify({ note: null }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"note back to baseline\", function () { const base = pm.environment.get(\"noteBaseline\"); const now = pm.response.json().note; pm.expect(now === (base || null)).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner cancels the still-open raise request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{raiseRequestId}}/owner-cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{raiseRequestId}}",
+                "owner-cancel"
+              ]
+            },
+            "description": "Undoes the second request the raise tests used (open -> cancelled)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"cancelled\", function () { pm.expect(pm.response.json().status).to.eql(\"cancelled\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner cancels the assigned walk request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{requestId}}/owner-cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{requestId}}",
+                "owner-cancel"
+              ]
+            },
+            "description": "Undoes the assigned walk the happy path created (assigned -> cancelled)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"cancelled\", function () { pm.expect(pm.response.json().status).to.eql(\"cancelled\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker restores availability",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{availabilityRestoreBody}}"
+            },
+            "description": "Restores the online/offline state read at the start of the run."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.environment.get(\"availabilityWasOnline\") === true) { pm.environment.set(\"availabilityRestoreBody\", JSON.stringify({ online: true, lat: 1.2076, lng: -77.2768 })); } else { pm.environment.set(\"availabilityRestoreBody\", JSON.stringify({ online: false })); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"back to baseline\", function () { pm.expect(pm.response.json().online).to.eql(pm.environment.get(\"availabilityWasOnline\") === true); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker restores the weekly goal",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/goal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "goal"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{goalRestoreBody}}"
+            },
+            "description": "Puts back the goal captured in the earnings read. When the walker had no goal the API has no unset, so the minimum (10000) is stored and the change stays bounded."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.environment.get(\"goalBaseline\"); pm.environment.set(\"goalRestoreBody\", JSON.stringify({ goalCop: base ? Number(base) : 10000 }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"back to baseline\", function () { const base = pm.environment.get(\"goalBaseline\"); pm.expect(pm.response.json().goalCop).to.eql(base ? Number(base) : 10000); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
