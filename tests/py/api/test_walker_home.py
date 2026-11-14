@@ -179,7 +179,7 @@ class TestHome:
         position(data)
         walk(data, "o-near", "open", walker_id=None, pickup=(1.2200, -77.2811))       # ~0.7 km
         walk(data, "o-mid", "open", walker_id=None, pickup=(1.2450, -77.2811))        # ~3.5 km: in (was out at 2 km)
-        walk(data, "o-far", "open", walker_id=None, pickup=(1.2800, -77.2811))        # ~7.4 km
+        walk(data, "o-far", "open", walker_id=None, pickup=(1.3200, -77.2811))        # ~11.8 km
         walk(data, "o-late", "open", walker_id=None, deadline="2026-09-30T23:00:00+00:00")  # deadline passed
         walk(data, "o-asg", "assigned", walker_id="walker-v")
         assert get_home(fake_client).json()["openNearby"] == 2
@@ -214,7 +214,7 @@ class TestHome:
         walk(data, "o-2", "open", walker_id=None, pickup=(1.2250, -77.2811), dog_id="dog-max")
         walk(data, "o-0", "open", walker_id=None, pickup=PASTO)
         walk(data, "o-3", "open", walker_id=None, pickup=(1.2280, -77.2811))
-        walk(data, "o-far", "open", walker_id=None, pickup=(1.2800, -77.2811))
+        walk(data, "o-far", "open", walker_id=None, pickup=(1.3200, -77.2811))
         offer(data, "o-1", 19000)
         body = get_home(fake_client).json()
         assert body["openNearby"] == 4
