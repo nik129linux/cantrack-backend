@@ -46,7 +46,7 @@ from ..bidding_eligibility import (
 from ..db import first_row, run_query
 from ..deps import current_role, get_current_user, get_now, get_supabase, get_text_model
 from ..geo import haversine_km
-from ..walker_access import is_online
+from ..walker_access import ensure_walker_profile, is_online
 from ..walk_report import build_and_store_walk_report
 from ..replay import (
     BACKWARD,
@@ -799,6 +799,8 @@ def send_offer(
         walk_request["pickup_lng"],
     )
 
+    # The owner's pick assigns walker_id, which must exist in walker_profiles.
+    ensure_walker_profile(supabase, user)
     rows = run_query(
         supabase.table(OFFERS_TABLE).insert(
             {
