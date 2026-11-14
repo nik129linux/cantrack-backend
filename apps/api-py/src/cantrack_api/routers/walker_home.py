@@ -19,6 +19,7 @@ from supabase_auth.types import User
 
 from .. import walker_access
 from ..app import limiter
+from ..bidding import DEFAULT_CONFIG
 from ..db import run_query
 from ..deps import get_now, get_supabase
 from ..geo import haversine_km
@@ -39,8 +40,9 @@ BOGOTA = timezone(timedelta(hours=-5))
 #: Simulated commission, in percent. No real payment exists.
 COMMISSION_PCT = 10
 
-#: Open requests closer than this are offered to the walker.
-NEARBY_RADIUS_KM = 2.0
+#: Open requests closer than this are offered to the walker: the same radius
+#: Solicitudes and the owner's "walkers nearby" count use, so they never disagree.
+NEARBY_RADIUS_KM = DEFAULT_CONFIG.radius_km
 
 #: How many nearby open requests the home previews (the full list is Solicitudes).
 NEARBY_PREVIEW = 3

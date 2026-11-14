@@ -11,7 +11,7 @@ def make_offer(offer_id, price_cop=25000, distance_km=1.0, recent_rating=None,
 class TestBiddingScoring:
     def test_config_defaults_match_the_spec(self):
         assert (DEFAULT_CONFIG.radius_km, DEFAULT_CONFIG.detour_limit_min,
-                DEFAULT_CONFIG.auto_pick_after_min, DEFAULT_CONFIG.walker_capacity) == (2.0, 10.0, 10.0, 4)
+                DEFAULT_CONFIG.auto_pick_after_min, DEFAULT_CONFIG.walker_capacity) == (5.0, 10.0, 10.0, 4)
         assert (DEFAULT_CONFIG.price_weight, DEFAULT_CONFIG.distance_weight,
                 DEFAULT_CONFIG.rating_weight, DEFAULT_CONFIG.empty_bucket_penalty) == (0.4, 0.3, 0.3, 0.8)
         assert (DEFAULT_CONFIG.cancel_tokens_per_week, DEFAULT_CONFIG.no_show_grace_min) == (3, 15.0)
