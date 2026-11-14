@@ -79,7 +79,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
-                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"walkerId\", \"email\", \"displayName\", \"bio\", \"serviceArea\", \"pricePerWalk\", \"phone\", \"avatarUrl\", \"consent\", \"stats\"); });"
+                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"walkerId\", \"email\", \"displayName\", \"bio\", \"serviceArea\", \"pricePerWalk\", \"phone\", \"avatarUrl\", \"consent\", \"stats\", \"dogSizes\", \"experienceYears\", \"memberSince\", \"reviews\"); });"
                 ]
               }
             }

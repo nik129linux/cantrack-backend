@@ -37,7 +37,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
-                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"ownerId\", \"email\", \"displayName\", \"phone\", \"avatarUrl\", \"home\", \"consent\", \"stats\"); });"
+                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"ownerId\", \"email\", \"displayName\", \"phone\", \"avatarUrl\", \"home\", \"consent\", \"stats\", \"dogs\", \"emailVerified\", \"emergency\", \"handoff\", \"memberSince\", \"notifications\", \"paymentMethod\", \"pickupNotes\", \"vet\", \"walkers\"); });"
                 ]
               }
             }
