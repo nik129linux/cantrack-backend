@@ -23,7 +23,9 @@ class BiddingConfig:
     Big-O: construction and field access are O(1).
     """
 
-    radius_km: float = 2.0
+    # 5 km covers most of Pasto from any neighbourhood; 2 km hid owners a
+    # short drive away (a real 3.4 km pair never saw each other).
+    radius_km: float = 5.0
     detour_limit_min: float = 10.0
     auto_pick_after_min: float = 10.0
     walker_capacity: int = 4
