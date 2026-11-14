@@ -96,6 +96,7 @@ class FakeQuery:
         self._payload: Any = None
         self._filters: list[tuple[str, Any]] = []
         self._in_filters: list[tuple[str, list[Any]]] = []
+        self._lt_filters: list[tuple[str, Any]] = []
         self._order: tuple[str, bool] | None = None
         self._limit: int | None = None
 
@@ -121,6 +122,10 @@ class FakeQuery:
         self._filters.append((column, value))
         return self
 
+    def lt(self, column: str, value: Any) -> "FakeQuery":
+        self._lt_filters.append((column, value))
+        return self
+
     def in_(self, column: str, values: list[Any]) -> "FakeQuery":
         self._in_filters.append((column, list(values)))
         return self
@@ -137,6 +142,8 @@ class FakeQuery:
         return all(str(row.get(col)) == str(val) for col, val in self._filters) and all(
             str(row.get(col)) in {str(v) for v in values}
             for col, values in self._in_filters
+        ) and all(
+            row.get(col) is not None and row[col] < val for col, val in self._lt_filters
         )
 
     def execute(self) -> SimpleNamespace:

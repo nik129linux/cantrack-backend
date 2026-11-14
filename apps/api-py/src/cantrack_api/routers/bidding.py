@@ -1505,10 +1505,19 @@ def raise_fare(
         )
         .eq("id", request_id)
         .eq("status", "open")
+        # Compare-and-set: a concurrent raise may have landed after our read,
+        # so the fare is only written while the stored one is still lower.
+        .lt("price_cop", body.priceCop)
     )
     if not rows:
+        current = _owned_request(supabase, request_id, user.id)
+        if current["status"] != "open":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=WALK_NO_LONGER_OPEN_MESSAGE,
+            )
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=WALK_NO_LONGER_OPEN_MESSAGE
+            status_code=status.HTTP_400_BAD_REQUEST, detail=RAISE_HIGHER_MESSAGE
         )
     return _open_view(rows[0])
 

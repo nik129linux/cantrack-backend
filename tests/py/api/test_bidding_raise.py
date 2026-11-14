@@ -56,3 +56,18 @@ class TestRaise:
     def test_only_open(self, fake_client, fake, status):
         seed_open(fake, status=status)
         assert raise_fare(fake_client, 17000).status_code == 409
+
+
+class TestRaiseRace:
+    def test_a_stale_read_cannot_lower_the_fare(self, fake_client, fake, monkeypatch):
+        """Two raises in flight: the slower one read the fare before the faster
+        one wrote it. The UPDATE must still refuse to lower the stored fare."""
+        from cantrack_api.routers import bidding
+
+        seed_open(fake, price=20000)  # the faster raise already landed at 20000
+        stale = dict(fake.table("walk_requests").select("*").execute().data[0], price_cop=15000)
+        monkeypatch.setattr(bidding, "_owned_request", lambda *_a, **_k: stale)
+        res = raise_fare(fake_client, 17000)  # above the stale 15000, below the real 20000
+        assert res.status_code in (400, 409)
+        rows = fake.table("walk_requests").select("*").execute().data
+        assert rows[0]["price_cop"] == 20000
