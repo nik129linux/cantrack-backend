@@ -1,6 +1,6 @@
 {
   "info": {
-    "name": "CanTrack \u2014 Walk Bidding (FR-23..FR-27)",
+    "name": "CanTrack — Walk Bidding (FR-23..FR-27)",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "description": "Walk-bidding API: post a request, bid, pick one winner, lifecycle, replay. Happy path runs top to bottom (it stores walkId/offerId as it goes); the NEG requests assert the failure cases. Fill the environment tokens first."
   },
@@ -31,10 +31,22 @@
         },
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"dogId\": \"{{dogId}}\",\n  \"windowStart\": \"2030-01-01T10:00:00+00:00\",\n  \"durationHours\": 1.0,\n  \"priceCop\": 30000,\n  \"pickupLat\": 6.2,\n  \"pickupLng\": -75.5\n}"
+          "raw": "{\n  \"dogId\": \"{{dogId}}\",\n  \"windowStart\": \"{{windowStart}}\",\n  \"durationHours\": 1.0,\n  \"priceCop\": 30000,\n  \"pickupLat\": 1.2136,\n  \"pickupLng\": -77.2811\n}"
         }
       },
       "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The API only accepts walks inside the next 30 days: start two days from now.",
+              "const start = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);",
+              "start.setUTCHours(14, 0, 0, 0);",
+              "pm.environment.set(\"windowStart\", start.toISOString());"
+            ]
+          }
+        },
         {
           "listen": "test",
           "script": {
@@ -47,6 +59,90 @@
               "    pm.expect(pm.response.json().status).to.eql(\"open\");",
               "    pm.environment.set(\"walkId\", pm.response.json().id);",
               "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Walker goes online (needed to send offers)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{walkerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"online\": true, \"lat\": 1.2136, \"lng\": -77.2811}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/walkers/{{walkerId}}/availability",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "walkers",
+            "{{walkerId}}",
+            "availability"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Second walker goes online",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{walker2Token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"online\": true, \"lat\": 1.2136, \"lng\": -77.2811}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/walkers/{{walker2Id}}/availability",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "walkers",
+            "{{walker2Id}}",
+            "availability"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
             ]
           }
         }
@@ -134,6 +230,51 @@
               "});",
               "pm.test(\"store offerId\", function () {",
               "    pm.environment.set(\"offerId\", pm.response.json().offerId || pm.response.json().id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "NEG second offer same walker → 409",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{walkerToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/offers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "offers"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"priceCop\": 27000,\n  \"etaMin\": 9.0\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"409 Conflict (already offered)\", function () {",
+              "    pm.response.to.have.status(409);",
               "});"
             ]
           }
@@ -234,7 +375,7 @@
       ]
     },
     {
-      "name": "Pick offer (owner) \u2014 wins",
+      "name": "Pick offer (owner) — wins",
       "request": {
         "method": "POST",
         "header": [
@@ -455,7 +596,7 @@
       ]
     },
     {
-      "name": "NEG second pick \u2192 409",
+      "name": "NEG second pick → 409",
       "request": {
         "method": "POST",
         "header": [
@@ -501,7 +642,7 @@
       ]
     },
     {
-      "name": "NEG check-out from assigned \u2192 409",
+      "name": "NEG check-out from assigned → 409",
       "request": {
         "method": "POST",
         "header": [
@@ -542,13 +683,13 @@
       ]
     },
     {
-      "name": "NEG wrong owner pick \u2192 403",
+      "name": "NEG wrong owner pick → 403",
       "request": {
         "method": "POST",
         "header": [
           {
             "key": "Authorization",
-            "value": "Bearer {{walker2Token}}"
+            "value": "Bearer {{otherOwnerToken}}"
           },
           {
             "key": "Content-Type",
@@ -587,52 +728,7 @@
       ]
     },
     {
-      "name": "NEG second offer same walker \u2192 409",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Authorization",
-            "value": "Bearer {{walkerToken}}"
-          },
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/offers",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "bidding",
-            "requests",
-            "{{walkId}}",
-            "offers"
-          ]
-        },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"priceCop\": 27000,\n  \"etaMin\": 9.0\n}"
-        }
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"409 Conflict (already offered)\", function () {",
-              "    pm.response.to.have.status(409);",
-              "});"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "NEG rating above 5 \u2192 400",
+      "name": "NEG rating above 5 → 400",
       "request": {
         "method": "POST",
         "header": [
@@ -673,6 +769,95 @@
               "});"
             ]
           }
+        }
+      ]
+    },
+    {
+      "name": "Cleanup",
+      "item": [
+        {
+          "name": "Walker goes offline",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"online\": false}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "availability"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Second walker goes offline",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walker2Token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"online\": false}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walker2Id}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walker2Id}}",
+                "availability"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

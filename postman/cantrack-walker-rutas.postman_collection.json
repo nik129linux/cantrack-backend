@@ -37,7 +37,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
-                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"date\", \"start\", \"stops\", \"totalKm\", \"totalMinutes\", \"nextStopId\"); });"
+                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"date\", \"start\", \"stops\", \"totalKm\", \"totalMinutes\", \"nextStopId\", \"active\", \"overdue\"); });"
                 ]
               }
             }

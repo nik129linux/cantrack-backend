@@ -80,7 +80,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
-                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"greetingName\", \"online\", \"activeWalk\", \"nextWalk\", \"today\", \"rating\", \"openNearby\", \"pendingOffers\"); });",
+                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"greetingName\", \"online\", \"activeWalk\", \"nextWalk\", \"today\", \"rating\", \"openNearby\", \"pendingOffers\", \"nearby\"); });",
                   "pm.test(\"online after the switch\", function () { pm.expect(pm.response.json().online).to.eql(true); });"
                 ]
               }
