@@ -7,9 +7,9 @@ format is camelCase; ``owner_profiles`` is snake_case with one row per owner.
 
 import io
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Path, Request, UploadFile, status
 from PIL import Image, UnidentifiedImageError
 from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field
@@ -25,6 +25,7 @@ from ..owner_access import owner_from_path
 router = APIRouter()
 
 PROFILES_TABLE = "owner_profiles"
+WALKER_PROFILES_TABLE = "walker_profiles"
 DOGS_TABLE = "dogs"
 WALK_REQUESTS_TABLE = "walk_requests"
 AVATAR_BUCKET = "avatars"
@@ -37,6 +38,7 @@ MAX_AVATAR_SIDE = 512
 TOO_BIG_MESSAGE = "The avatar must be 2 MB or less."
 UNREADABLE_MESSAGE = "Unreadable image."
 SAVED_MESSAGE = "Profile not found."
+UNKNOWN_WALKER_MESSAGE = "Walker not found."
 
 PHONE_PATTERN = r"^\+?[0-9][0-9 ]{6,19}$"
 
@@ -49,16 +51,51 @@ class Home(BaseModel):
     label: str = Field(max_length=120)
 
 
+HandoffMethod = Literal["in_person", "doorman", "key"]
+PaymentMethod = Literal["cash", "nequi", "card"]
+
+
+class EmergencyContact(BaseModel):
+    """Who the walker calls when the owner does not answer."""
+
+    name: str = Field(min_length=1, max_length=80)
+    relation: str = Field(default="", max_length=40)
+    phone: str = Field(pattern=PHONE_PATTERN)
+
+
+class Vet(BaseModel):
+    """The owner's trusted veterinary clinic."""
+
+    name: str = Field(min_length=1, max_length=80)
+    phone: str | None = Field(default=None, pattern=PHONE_PATTERN)
+
+
+class Notifications(BaseModel):
+    """Which walk events the owner wants to be told about."""
+
+    walkStarted: bool = True
+    report: bool = True
+    walkDone: bool = True
+    offers: bool = True
+
+
 class SaveProfileBody(BaseModel):
     """Body of ``PUT /owners/{ownerId}/profile``.
 
     Only the fields an owner may set are declared, so ``ownerId`` or any other
-    column sent by the client is dropped by the schema.
+    column sent by the client is dropped by the schema. Each section of the
+    profile screen sends only its own fields; unsent ones keep their value.
     """
 
     displayName: str | None = Field(default=None, min_length=1, max_length=80)
     phone: str | None = Field(default=None, pattern=PHONE_PATTERN)
     home: Home | None = None
+    pickupNotes: str | None = Field(default=None, max_length=300)
+    handoff: HandoffMethod | None = None
+    emergency: EmergencyContact | None = None
+    vet: Vet | None = None
+    paymentMethod: PaymentMethod | None = None
+    notifications: Notifications | None = None
 
 
 class ConsentBody(BaseModel):
@@ -81,17 +118,50 @@ class Consent(BaseModel):
     at: str
 
 
+class DogChip(BaseModel):
+    """One of the owner's dogs, as the profile header lists it."""
+
+    id: str
+    name: str
+    breed: str | None
+
+
+class KnownWalker(BaseModel):
+    """A walker who already walked one of the owner's dogs."""
+
+    walkerId: str
+    name: str | None
+    walks: int
+    favorite: bool
+
+
 class OwnerProfile(BaseModel):
     """The full profile payload returned by ``GET`` and ``PUT``."""
 
     ownerId: str
     email: str | None
+    emailVerified: bool
+    memberSince: str | None
     displayName: str | None
     phone: str | None
     avatarUrl: str | None
     home: Home | None
+    pickupNotes: str | None
+    handoff: HandoffMethod | None
+    emergency: EmergencyContact | None
+    vet: Vet | None
+    paymentMethod: PaymentMethod | None
+    notifications: Notifications
     consent: Consent | None
     stats: Stats
+    dogs: list[DogChip]
+    walkers: list[KnownWalker]
+
+
+class FavoriteBody(BaseModel):
+    """Body of ``PUT /owners/{ownerId}/favorites/{walkerId}``."""
+
+    favorite: bool
 
 
 class AvatarResponse(BaseModel):
@@ -151,32 +221,90 @@ def _save_row(
     return first_row(rows, SAVED_MESSAGE)
 
 
-def _stats(supabase: Client, owner_id: str) -> Stats:
-    """Count the owner's dogs and finished walks.
+class Activity(BaseModel):
+    """What the owner's dogs and walks add to the profile."""
 
-    O(n) in the number of the owner's rows: the two tables are read with one
-    query each and ``walksDone`` is counted in Python (the client offers no
-    aggregate).
+    stats: Stats
+    dogs: list[DogChip]
+    walkers: list[KnownWalker]
+
+
+def _activity(supabase: Client, owner_id: str, favorites: list[str]) -> Activity:
+    """Read the owner's dogs, counters and the walkers they already know.
+
+    O(d + w) in the owner's dog and walk rows, plus one lookup of the walkers'
+    names. A walker is "known" once they finished a walk for this owner; a
+    favourite stays listed even with no finished walk left.
 
     Args:
         supabase: The Supabase client used to read the rows.
-        owner_id: The owner whose counters are wanted.
+        owner_id: The owner whose activity is wanted.
+        favorites: The walker ids the owner marked as favourites.
 
     Returns:
-        ``{"dogs": n, "walksDone": m}``.
+        The counters, the dog chips and the known walkers (favourites first,
+        then by number of walks).
     """
     dogs = run_query(
-        supabase.table(DOGS_TABLE).select("id").eq("owner_id", owner_id)
+        supabase.table(DOGS_TABLE).select("id,name,breed").eq("owner_id", owner_id)
     )
     walks = run_query(
         supabase.table(WALK_REQUESTS_TABLE)
-        .select("id,status")
+        .select("id,status,walker_id")
         .eq("owner_id", owner_id)
     )
-    return Stats(
-        dogs=len(dogs),
-        walksDone=sum(1 for walk in walks if walk.get("status") == "done"),
+    done = [walk for walk in walks if walk.get("status") == "done"]
+    counts: dict[str, int] = {}
+    for walk in done:
+        walker_id = walk.get("walker_id")
+        if walker_id:
+            counts[walker_id] = counts.get(walker_id, 0) + 1
+    favorite_set = set(favorites)
+    ids = list(counts.keys() | favorite_set)
+    names: dict[str, str | None] = {}
+    if ids:
+        rows = run_query(
+            supabase.table(WALKER_PROFILES_TABLE)
+            .select("walker_id,display_name")
+            .in_("walker_id", ids)
+        )
+        names = {row["walker_id"]: row.get("display_name") for row in rows}
+    walkers = [
+        KnownWalker(
+            walkerId=walker_id,
+            name=names.get(walker_id),
+            walks=counts.get(walker_id, 0),
+            favorite=walker_id in favorite_set,
+        )
+        for walker_id in ids
+    ]
+    walkers.sort(key=lambda walker: (not walker.favorite, -walker.walks, walker.name or ""))
+    return Activity(
+        stats=Stats(dogs=len(dogs), walksDone=len(done)),
+        dogs=[
+            DogChip(id=str(dog["id"]), name=dog.get("name") or "", breed=dog.get("breed"))
+            for dog in dogs
+        ],
+        walkers=walkers,
     )
+
+
+def _known_walker_ids(supabase: Client, owner_id: str) -> set[str]:
+    """Return the walkers who ever took a walk request from this owner.
+
+    O(w) in the owner's walk rows.
+
+    Args:
+        supabase: The Supabase client used to read the rows.
+        owner_id: The owner whose walks are read.
+
+    Returns:
+        The set of walker ids assigned to any of the owner's walks.
+    """
+    walks = run_query(
+        supabase.table(WALK_REQUESTS_TABLE).select("walker_id").eq("owner_id", owner_id)
+    )
+    return {walk["walker_id"] for walk in walks if walk.get("walker_id")}
 
 
 def _signed_avatar(supabase: Client, path: str | None) -> str | None:
@@ -217,17 +345,17 @@ def _signed_avatar(supabase: Client, path: str | None) -> str | None:
 
 
 def _view(
-    owner: User, row: dict[str, Any], stats: Stats, avatar_url: str | None
+    supabase: Client, owner: User, row: dict[str, Any]
 ) -> OwnerProfile:
     """Translate a stored row to the camelCase profile payload.
 
-    O(1): fixed-size field mapping.
+    O(d + w) in the owner's dog and walk rows (see ``_activity``); the field
+    mapping itself is O(1).
 
     Args:
+        supabase: The Supabase client used to read activity and sign the avatar.
         owner: The authenticated owner.
         row: The stored profile row, possibly empty.
-        stats: The owner's activity counters.
-        avatar_url: The signed avatar URL, or None.
 
     Returns:
         The profile in the API shape.
@@ -235,19 +363,42 @@ def _view(
     has_home = row.get("home_lat") is not None and row.get("home_lng") is not None
     version = row.get("consent_version")
     at = row.get("consent_at")
+    favorites = [str(walker_id) for walker_id in row.get("favorite_walker_ids") or []]
+    activity = _activity(supabase, owner.id, favorites)
+    emergency_name = row.get("emergency_name")
+    emergency_phone = row.get("emergency_phone")
+    created = getattr(owner, "created_at", None)
     return OwnerProfile(
         ownerId=owner.id,
         email=owner.email,
+        emailVerified=getattr(owner, "email_confirmed_at", None) is not None,
+        memberSince=created.isoformat() if isinstance(created, datetime) else created,
         displayName=row.get("display_name"),
         phone=row.get("phone"),
-        avatarUrl=avatar_url,
+        avatarUrl=_signed_avatar(supabase, row.get("avatar_path")),
         home=(
             Home(lat=row["home_lat"], lng=row["home_lng"], label=row.get("home_label") or "")
             if has_home
             else None
         ),
+        pickupNotes=row.get("pickup_notes"),
+        handoff=row.get("handoff_method"),
+        emergency=(
+            EmergencyContact(
+                name=emergency_name,
+                relation=row.get("emergency_relation") or "",
+                phone=emergency_phone,
+            )
+            if emergency_name and emergency_phone
+            else None
+        ),
+        vet=Vet(name=row["vet_name"], phone=row.get("vet_phone")) if row.get("vet_name") else None,
+        paymentMethod=row.get("payment_method"),
+        notifications=Notifications(**(row.get("notify_prefs") or {})),
         consent=Consent(version=version, at=at) if version is not None and at else None,
-        stats=stats,
+        stats=activity.stats,
+        dogs=activity.dogs,
+        walkers=activity.walkers,
     )
 
 
@@ -258,9 +409,9 @@ def get_owner_profile(
     owner: User = Depends(owner_from_path),
     supabase: Client = Depends(get_supabase),
 ) -> OwnerProfile:
-    """Return the caller's profile, avatar URL, consent and counters.
+    """Return the caller's profile, avatar URL, consent, dogs and walkers.
 
-    O(n) in the owner's dog and walk rows (the counters), with the rest O(1).
+    O(n) in the owner's dog and walk rows, with the rest O(1).
 
     Args:
         request: The request, read by the rate limiter.
@@ -268,15 +419,14 @@ def get_owner_profile(
         supabase: The Supabase client used to read rows and sign the avatar.
 
     Returns:
-        The profile; a new owner gets nulls and zeroed counters.
+        The profile; a new owner gets nulls, default notifications and zeroed
+        counters.
 
     Raises:
         HTTPException: 403 when the caller is not that owner, or 500 if the
             database or storage fails.
     """
-    row = _profile_row(supabase, owner.id)
-    avatar_url = _signed_avatar(supabase, row.get("avatar_path"))
-    return _view(owner, row, _stats(supabase, owner.id), avatar_url)
+    return _view(supabase, owner, _profile_row(supabase, owner.id))
 
 
 @router.put("/owners/{ownerId}/profile", response_model=OwnerProfile)
@@ -289,12 +439,13 @@ def save_owner_profile(
 ) -> OwnerProfile:
     """Create or update the caller's profile.
 
-    O(n) in the owner's dog and walk rows (the counters), plus O(1) for the
+    O(n) in the owner's dog and walk rows (the read-back), plus O(1) for the
     profile write.
 
     Args:
         request: The request, read by the rate limiter.
-        body: The fields to set; unset ones keep their stored value.
+        body: The fields to set; unset ones keep their stored value and an
+            explicit null clears them.
         owner: The authenticated owner named in the path.
         supabase: The Supabase client used to read and write the row.
 
@@ -305,20 +456,81 @@ def save_owner_profile(
         HTTPException: 400 when a field fails validation, 403 when the caller is
             not that owner, or 500 if the database rejects the write.
     """
+    sent = body.model_fields_set
     values: dict[str, Any] = {}
-    if "displayName" in body.model_fields_set:
+    if "displayName" in sent:
         values["display_name"] = body.displayName
-    if "phone" in body.model_fields_set:
+    if "phone" in sent:
         values["phone"] = body.phone
-    if "home" in body.model_fields_set:
+    if "home" in sent:
         # owner_profiles stores the pin as three columns (home_lat/home_lng/home_label).
         home = body.home
         values["home_lat"] = home.lat if home else None
         values["home_lng"] = home.lng if home else None
         values["home_label"] = home.label if home else None
+    if "pickupNotes" in sent:
+        notes = (body.pickupNotes or "").strip()
+        values["pickup_notes"] = notes or None
+    if "handoff" in sent:
+        values["handoff_method"] = body.handoff
+    if "emergency" in sent:
+        contact = body.emergency
+        values["emergency_name"] = contact.name.strip() if contact else None
+        values["emergency_relation"] = (contact.relation.strip() or None) if contact else None
+        values["emergency_phone"] = contact.phone if contact else None
+    if "vet" in sent:
+        vet = body.vet
+        values["vet_name"] = vet.name.strip() if vet else None
+        values["vet_phone"] = vet.phone if vet else None
+    if "paymentMethod" in sent:
+        values["payment_method"] = body.paymentMethod
+    if "notifications" in sent:
+        values["notify_prefs"] = (body.notifications or Notifications()).model_dump()
     row = _save_row(supabase, owner.id, values)
-    avatar_url = _signed_avatar(supabase, row.get("avatar_path"))
-    return _view(owner, row, _stats(supabase, owner.id), avatar_url)
+    return _view(supabase, owner, row)
+
+
+@router.put("/owners/{ownerId}/favorites/{walkerId}", response_model=OwnerProfile)
+@limiter.limit("30/minute")
+def set_favorite_walker(
+    request: Request,
+    body: FavoriteBody,
+    walker_id: str = Path(alias="walkerId", min_length=1, max_length=64),
+    owner: User = Depends(owner_from_path),
+    supabase: Client = Depends(get_supabase),
+) -> OwnerProfile:
+    """Mark or unmark a walker as one of the caller's favourites.
+
+    O(w) in the owner's walk rows: only a walker who already took one of this
+    owner's walks can be marked, so the list never names strangers.
+
+    Args:
+        request: The request, read by the rate limiter.
+        body: ``{"favorite": true}`` to add, ``false`` to remove.
+        walker_id: The ``walkerId`` path segment.
+        owner: The authenticated owner named in the path.
+        supabase: The Supabase client used to read and write the row.
+
+    Returns:
+        The updated profile.
+
+    Raises:
+        HTTPException: 404 when adding a walker the owner never walked with,
+            403 when the caller is not that owner, or 500 on a database error.
+    """
+    row = _profile_row(supabase, owner.id)
+    favorites = [str(item) for item in row.get("favorite_walker_ids") or []]
+    if body.favorite:
+        if walker_id not in favorites:
+            if walker_id not in _known_walker_ids(supabase, owner.id):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail=UNKNOWN_WALKER_MESSAGE
+                )
+            favorites.append(walker_id)
+    else:
+        favorites = [item for item in favorites if item != walker_id]
+    row = _save_row(supabase, owner.id, {"favorite_walker_ids": favorites})
+    return _view(supabase, owner, row)
 
 
 @router.post("/owners/{ownerId}/avatar", response_model=AvatarResponse)

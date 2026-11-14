@@ -43,8 +43,11 @@ class TestProfile:
     def test_a_new_walker_has_an_empty_profile(self, fake_client, data):
         assert get_profile(fake_client).json() == {
             "walkerId": "walker-w", "email": "walker-w@example.com", "displayName": None, "bio": None,
-            "serviceArea": None, "pricePerWalk": None, "phone": None, "avatarUrl": None, "consent": None,
-            "stats": {"walksDone": 0, "rating": {"average": None, "count": 0}},
+            "serviceArea": None, "pricePerWalk": None, "phone": None, "avatarUrl": None,
+            "experienceYears": None, "dogSizes": [], "memberSince": None, "consent": None,
+            "stats": {"walksDone": 0, "hoursWalked": 0.0, "clients": 0,
+                      "rating": {"average": None, "count": 0, "breakdown": [0, 0, 0, 0, 0]}},
+            "reviews": [],
         }
 
     def test_save_and_read_back(self, fake_client, data):
@@ -99,7 +102,89 @@ class TestProfile:
                   created_at="2026-09-01T00:00:00+00:00")
         data.seed("walk_ratings", walk_request_id="w0", walker_id="walker-w", rating=5,
                   created_at="2026-09-01T00:00:00+00:00")
-        assert get_profile(fake_client).json()["stats"] == {"walksDone": 1, "rating": {"average": 4.5, "count": 2}}
+        assert get_profile(fake_client).json()["stats"] == {
+            "walksDone": 1, "hoursWalked": 0.0, "clients": 1,
+            "rating": {"average": 4.5, "count": 2, "breakdown": [0, 0, 0, 1, 1]},
+        }
+
+
+class TestExperience:
+    """Years and dog sizes: optional, and what owners read on each offer."""
+
+    def test_saved_and_read_back_in_size_order(self, fake_client, data):
+        res = put_profile(fake_client, {**FULL, "experienceYears": 3,
+                                        "dogSizes": ["large", "small", "large"]})
+        assert res.status_code == 200
+        body = get_profile(fake_client).json()
+        assert body["experienceYears"] == 3
+        assert body["dogSizes"] == ["small", "large"]
+
+    def test_an_older_client_that_omits_them_keeps_them(self, fake_client, data):
+        put_profile(fake_client, {**FULL, "experienceYears": 3, "dogSizes": ["medium"]})
+        put_profile(fake_client, {**FULL, "bio": "Nueva"})
+        body = get_profile(fake_client).json()
+        assert (body["experienceYears"], body["dogSizes"]) == (3, ["medium"])
+
+    def test_null_and_empty_clear_them(self, fake_client, data):
+        put_profile(fake_client, {**FULL, "experienceYears": 3, "dogSizes": ["medium"]})
+        put_profile(fake_client, {**FULL, "experienceYears": None, "dogSizes": []})
+        body = get_profile(fake_client).json()
+        assert (body["experienceYears"], body["dogSizes"]) == (None, [])
+
+    @pytest.mark.parametrize("extra", [
+        {"experienceYears": -1}, {"experienceYears": 51}, {"dogSizes": ["giant"]},
+        {"dogSizes": ["small", "medium", "large", "small"]},
+    ])
+    def test_validation(self, fake_client, data, extra):
+        assert put_profile(fake_client, {**FULL, **extra}).status_code == 400
+
+    def test_member_since_is_the_row_creation(self, fake_client, data):
+        data.seed("walker_profiles", walker_id="walker-w", display_name="Mateo",
+                  price_per_walk=18000, created_at="2026-08-02T10:00:00+00:00")
+        assert get_profile(fake_client).json()["memberSince"] == "2026-08-02T10:00:00+00:00"
+
+
+class TestTrackRecord:
+    """Hours, distinct clients and the latest ratings with dog and first name."""
+
+    def seed(self, data):
+        data.seed("owner_profiles", owner_id="owner-a", display_name="Camila Rosero")
+        data.seed("owner_profiles", owner_id="owner-b", display_name="Andrés")
+        data.seed("dogs", id="dog-1", owner_id="owner-a", name="Nube")
+        data.seed("dogs", id="dog-2", owner_id="owner-b", name="Toby")
+        for i, (owner, dog) in enumerate([("owner-a", "dog-1"), ("owner-a", "dog-1"),
+                                          ("owner-b", "dog-2")]):
+            data.seed("walk_requests", id=f"d{i}", owner_id=owner, dog_id=dog,
+                      walker_id="walker-w", status="done", duration_hours=1.5)
+        data.seed("walk_requests", id="x1", owner_id="owner-a", dog_id="dog-1",
+                  walker_id="walker-w", status="assigned", duration_hours=2)
+        data.seed("walk_ratings", walk_request_id="d0", walker_id="walker-w", rating=5,
+                  created_at="2026-09-01T00:00:00+00:00")
+        data.seed("walk_ratings", walk_request_id="d2", walker_id="walker-w", rating=3.6,
+                  created_at="2026-09-03T00:00:00+00:00")
+
+    def test_counts_only_finished_walks(self, fake_client, data):
+        self.seed(data)
+        stats = get_profile(fake_client).json()["stats"]
+        assert (stats["walksDone"], stats["hoursWalked"], stats["clients"]) == (3, 4.5, 2)
+        assert stats["rating"]["breakdown"] == [0, 0, 0, 1, 1]
+
+    def test_reviews_are_newest_first_with_first_names(self, fake_client, data):
+        self.seed(data)
+        assert get_profile(fake_client).json()["reviews"] == [
+            {"rating": 3.6, "at": "2026-09-03T00:00:00+00:00", "dogName": "Toby", "ownerName": "Andrés"},
+            {"rating": 5.0, "at": "2026-09-01T00:00:00+00:00", "dogName": "Nube", "ownerName": "Camila"},
+        ]
+
+    def test_at_most_five_reviews(self, fake_client, data):
+        for i in range(7):
+            data.seed("walk_ratings", walk_request_id=f"gone-{i}", walker_id="walker-w",
+                      rating=4, created_at=f"2026-09-0{i + 1}T00:00:00+00:00")
+        reviews = get_profile(fake_client).json()["reviews"]
+        assert len(reviews) == 5
+        assert reviews[0]["at"].startswith("2026-09-07")
+        # The walk row is gone (deleted owner): the stars stay, the names do not.
+        assert (reviews[0]["dogName"], reviews[0]["ownerName"]) == (None, None)
 
 
 class TestAvatar:

@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from supabase import Client
 from supabase_auth.types import User
 
@@ -97,6 +97,11 @@ WINDOW_TIME_MESSAGE = (
 )
 WINDOW_FUTURE_MESSAGE = "windowStart must be in the future."
 WINDOW_TOO_FAR_MESSAGE = "windowStart must be within the next 30 days."
+
+RAISE_HIGHER_MESSAGE = "The new fare must be higher than the current one."
+
+#: The highest fare an owner may offer (same cap as the create body).
+MAX_FARE_COP = 1_000_000
 
 #: How far ahead an owner may open a walk request.
 MAX_WINDOW_AHEAD_DAYS = 30
@@ -481,6 +486,9 @@ def list_open_requests(
     for walk_request in walk_requests:
         if datetime.fromisoformat(walk_request["deadline_at"]) <= now:
             continue
+        # An account that is also an owner never sees its own walks to bid on.
+        if walk_request["owner_id"] == user.id:
+            continue
         nearby_walkers: Quadtree[str] = Quadtree(*QUADTREE_BOUNDS)
         for position in position_rows:
             east, north = project_to_metres(
@@ -844,7 +852,8 @@ def list_offers(
     Returns:
         The ranked offers, each ``{offerId, walkerId, walkerName, priceCop,
         etaMin, distanceKm, score, scoreParts, ratingCount, recentRating,
-        allTimeRating}``.
+        allTimeRating, walkerBio, walkerArea, walkerExperienceYears,
+        walkerDogSizes, walkerWalksDone}``.
 
     Raises:
         HTTPException: 400 (not an owner), 403 (not the owner), 500 (database).
@@ -876,6 +885,7 @@ def list_offers(
     walker_ids = sorted({offer.walker_id for offer in walk_offers})
     profiles_by_walker: dict[str, dict[str, Any]] = {}
     ratings_by_walker: dict[str, list[float]] = {}
+    walks_done: dict[str, int] = {}
     if walker_ids:
         for profile_row in run_query(
             supabase.table(PROFILES_TABLE)
@@ -892,6 +902,15 @@ def list_offers(
             ratings_by_walker.setdefault(rating_row["walker_id"], []).append(
                 rating_row["rating"]
             )
+        # What the walker wrote on Perfil travels with the offer, plus how many
+        # walks they finished: the owner picks a person, not just a price.
+        for done_row in run_query(
+            supabase.table(REQUESTS_TABLE)
+            .select("walker_id")
+            .in_("walker_id", walker_ids)
+            .eq("status", "done")
+        ):
+            walks_done[done_row["walker_id"]] = walks_done.get(done_row["walker_id"], 0) + 1
 
     offer_map = {offer.offer_id: offer for offer in walk_offers}
     ranked_offers: list[dict[str, Any]] = []
@@ -916,6 +935,15 @@ def list_offers(
                 "ratingCount": len(walker_ratings),
                 "recentRating": rating_window.recent_average(),
                 "allTimeRating": rating_window.all_time_average(),
+                "walkerBio": profile.get("bio"),
+                "walkerArea": profile.get("service_area"),
+                "walkerExperienceYears": profile.get("experience_years"),
+                "walkerDogSizes": [
+                    size
+                    for size in ("small", "medium", "large")
+                    if size in (profile.get("dog_sizes") or [])
+                ],
+                "walkerWalksDone": walks_done.get(offer.walker_id, 0),
             }
         )
 
@@ -1428,6 +1456,61 @@ def owner_cancel_request(
         None,
         now,
     )
+
+
+class RaiseFareBody(BaseModel):
+    """Body of ``POST /bidding/requests/{id}/raise``: the new, higher fare."""
+
+    priceCop: int = Field(ge=0, le=MAX_FARE_COP)
+
+
+@router.post("/requests/{request_id}/raise")
+@limiter.limit("10/minute")
+def raise_fare(
+    request: Request,
+    request_id: str,
+    body: RaiseFareBody,
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+    now: datetime = Depends(get_now),
+) -> dict[str, Any]:
+    """Raise the fare of an open request and reopen its offer window.
+
+    Replaces "publish again": the same request keeps its offers and gets a
+    fresh ``deadline_at`` (now plus ``auto_pick_after_min``), so no duplicate
+    request is left open. Only the owning owner (403), only while ``open``
+    (409), and only upwards (400).
+
+    Returns:
+        The updated request in the marketplace view.
+    """
+    walk_request = _owned_request(supabase, request_id, user.id)
+    if walk_request["status"] != "open":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=WALK_NO_LONGER_OPEN_MESSAGE
+        )
+    if body.priceCop <= int(walk_request["price_cop"]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=RAISE_HIGHER_MESSAGE
+        )
+    rows = run_query(
+        supabase.table(REQUESTS_TABLE)
+        .update(
+            {
+                "price_cop": body.priceCop,
+                "deadline_at": (
+                    now + timedelta(minutes=DEFAULT_CONFIG.auto_pick_after_min)
+                ).isoformat(),
+            }
+        )
+        .eq("id", request_id)
+        .eq("status", "open")
+    )
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=WALK_NO_LONGER_OPEN_MESSAGE
+        )
+    return _open_view(rows[0])
 
 
 @router.post("/requests/{request_id}/no-show")

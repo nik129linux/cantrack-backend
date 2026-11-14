@@ -159,6 +159,8 @@ def _profile_view(
         "serviceArea": row.get("service_area"),
         "pricePerWalk": row.get("price_per_walk"),
         "phone": row.get("phone"),
+        "experienceYears": row.get("experience_years"),
+        "dogSizes": row.get("dog_sizes"),
         "avatarPath": row.get("avatar_path"),
         "consent": (
             {"version": version, "at": row.get("consent_at")}

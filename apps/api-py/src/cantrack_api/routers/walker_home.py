@@ -42,7 +42,14 @@ COMMISSION_PCT = 10
 #: Open requests closer than this are offered to the walker.
 NEARBY_RADIUS_KM = 2.0
 
+#: How many nearby open requests the home previews (the full list is Solicitudes).
+NEARBY_PREVIEW = 3
+
 BAD_PERIOD_MESSAGE = "period must be day, week or month."
+BAD_GOAL_MESSAGE = "goalCop must be between 10000 and 5000000."
+NO_PROFILE_MESSAGE = "Save your walker profile before setting a goal."
+GOAL_MIN_COP = 10_000
+GOAL_MAX_COP = 5_000_000
 BAD_LOCATION_MESSAGE = "lat must be between -90 and 90 and lng between -180 and 180."
 PERIODS = frozenset({"day", "week", "month"})
 
@@ -53,6 +60,29 @@ class DayEarnings(BaseModel):
     date: str
     walks: int
     grossCop: int
+    netCop: int
+
+
+class PeriodTotals(BaseModel):
+    """The totals of the period right before the one reported."""
+
+    walks: int
+    netCop: int
+
+
+class BestDay(BaseModel):
+    """The local day with the most net earnings in the period."""
+
+    date: str
+    netCop: int
+
+
+class DayWalk(BaseModel):
+    """One finished walk of the day, for the Día view."""
+
+    id: str
+    dogName: str | None
+    requestedTime: str | None
     netCop: int
 
 
@@ -71,6 +101,23 @@ class EarningsResponse(BaseModel):
     commissionCop: int
     netCop: int
     byDay: list[DayEarnings]
+    previous: PeriodTotals
+    bestDay: BestDay | None
+    avgPerWalkCop: int
+    goalCop: int | None
+    dayWalks: list[DayWalk] | None = None
+
+
+class GoalBody(BaseModel):
+    """The walker's weekly net goal."""
+
+    goalCop: int
+
+
+class GoalResponse(BaseModel):
+    """The saved weekly goal."""
+
+    goalCop: int
 
 
 class TodayTotals(BaseModel):
@@ -98,6 +145,22 @@ class WalkSummary(BaseModel):
     requestedTime: str | None
     durationHours: float | None
     priceCop: int
+    stale: bool = False
+
+
+class NearbyRequest(BaseModel):
+    """One open request close to the walker, previewed on the home panel.
+
+    Only what Solicitudes already shows: no owner name, no exact address.
+    """
+
+    id: str
+    dogName: str | None
+    requestedTime: str | None
+    durationHours: float | None
+    priceCop: int
+    distanceKm: float
+    offered: bool
 
 
 class HomeResponse(BaseModel):
@@ -110,6 +173,7 @@ class HomeResponse(BaseModel):
     today: TodayTotals
     rating: RatingSummary
     openNearby: int
+    nearby: list[NearbyRequest]
     pendingOffers: int
 
 
@@ -259,10 +323,10 @@ def _position_for(supabase: Client, walker_id: str) -> dict[str, Any] | None:
 
 def _open_nearby(
     opened: list[dict[str, Any]], position: dict[str, Any] | None, now: datetime
-) -> int:
-    """Count open requests due in the future within the nearby radius. O(n).
+) -> list[tuple[float, dict[str, Any]]]:
+    """List open requests still taking offers within the nearby radius. O(n log n).
 
-    A walker without a live position is offline and sees zero, even if open
+    A walker without a live position is offline and sees none, even if open
     requests exist.
 
     Args:
@@ -271,15 +335,15 @@ def _open_nearby(
         now: The current time.
 
     Returns:
-        How many open requests are within ``NEARBY_RADIUS_KM``.
+        ``(distance_km, row)`` pairs within ``NEARBY_RADIUS_KM``, closest first.
     """
     if position is None or not walker_access.is_online(position, now):
-        return 0
+        return []
     lat = position.get("lat")
     lng = position.get("lng")
     if not isinstance(lat, (int, float)) or not isinstance(lng, (int, float)):
-        return 0
-    count = 0
+        return []
+    near: list[tuple[float, dict[str, Any]]] = []
     for row in opened:
         deadline = _parse_instant(row.get("deadline_at"))
         if deadline is not None and deadline < now:
@@ -290,9 +354,29 @@ def _open_nearby(
             pickup_lng, (int, float)
         ):
             continue
-        if haversine_km(lat, lng, pickup_lat, pickup_lng) <= NEARBY_RADIUS_KM:
-            count += 1
-    return count
+        distance = haversine_km(lat, lng, pickup_lat, pickup_lng)
+        if distance <= NEARBY_RADIUS_KM:
+            near.append((distance, row))
+    near.sort(key=lambda pair: (pair[0], str(pair[1].get("id"))))
+    return near
+
+
+def _is_stale(row: dict[str, Any], now: datetime) -> bool:
+    """Whether an assigned walk's slot is already over. O(1).
+
+    Args:
+        row: An ``assigned`` ``walk_requests`` row.
+        now: The current time.
+
+    Returns:
+        True when ``requested_time + duration_hours`` is in the past.
+    """
+    start = _parse_instant(row.get("requested_time"))
+    if start is None:
+        return False
+    hours = row.get("duration_hours")
+    length = float(hours) if isinstance(hours, (int, float)) else 0.0
+    return start + timedelta(hours=length) < now
 
 
 @router.get("/walkers/{walkerId}/home", response_model=HomeResponse)
@@ -316,8 +400,9 @@ def get_home(
         now: The current time (dependency, frozen in tests).
 
     Returns:
-        Greeting, online state, active and next walk, today's totals, rating,
-        nearby open requests and pending offers.
+        Greeting, online state, active and next walk (``stale`` when its slot
+        already passed), today's totals, rating, the nearby open requests count
+        plus a preview of the closest few, and pending offers.
     """
     walker_id = user.id
 
@@ -348,16 +433,22 @@ def get_home(
     active_rows = sorted(
         (row for row in walks if row.get("status") == "in_walk"), key=_sort_key
     )
-    next_rows = sorted(
+    assigned = sorted(
         (row for row in walks if row.get("status") == "assigned"), key=_sort_key
     )
+    # The soonest walk still ahead wins; a walk whose slot already passed is
+    # shown only when nothing is ahead, flagged so the walker can sort it out.
+    upcoming = [row for row in assigned if not _is_stale(row, now)]
+    overdue = [row for row in assigned if _is_stale(row, now)]
     active_row = active_rows[0] if active_rows else None
-    next_row = next_rows[0] if next_rows else None
+    next_row = upcoming[0] if upcoming else (overdue[-1] if overdue else None)
+    near = _open_nearby(opened, position, now)
+    preview = [row for _, row in near[:NEARBY_PREVIEW]]
 
     dog_ids = sorted(
         {
             str(row["dog_id"])
-            for row in (active_row, next_row)
+            for row in (active_row, next_row, *preview)
             if row is not None and row.get("dog_id")
         }
     )
@@ -389,10 +480,26 @@ def get_home(
         else None
     )
     next_walk = (
-        _walk_summary(next_row, dog_names, owner_names, prices)
+        {
+            **_walk_summary(next_row, dog_names, owner_names, prices),
+            "stale": _is_stale(next_row, now),
+        }
         if next_row is not None
         else None
     )
+    offered_ids = {str(row.get("walk_request_id")) for row in offers}
+    nearby = [
+        {
+            "id": row["id"],
+            "dogName": dog_names.get(str(row.get("dog_id"))),
+            "requestedTime": row.get("requested_time"),
+            "durationHours": row.get("duration_hours"),
+            "priceCop": int(row["price_cop"]) if isinstance(row.get("price_cop"), int) else 0,
+            "distanceKm": round(distance, 1),
+            "offered": str(row["id"]) in offered_ids,
+        }
+        for distance, row in near[:NEARBY_PREVIEW]
+    ]
 
     today = _local_date(now.isoformat())
     today_walks = [
@@ -424,8 +531,37 @@ def get_home(
             "netCop": gross - commission,
         },
         "rating": {"average": average, "count": len(numeric)},
-        "openNearby": _open_nearby(opened, position, now),
+        "openNearby": len(near),
+        "nearby": nearby,
         "pendingOffers": pending_offers,
+    }
+
+
+@router.get("/walkers/{walkerId}/availability", response_model=AvailabilityResponse)
+def get_availability(
+    user: User = Depends(walker_access.walker_from_path),
+    supabase: Client = Depends(get_supabase),
+    now: datetime = Depends(get_now),
+) -> dict:
+    """Read the online switch without loading the whole home panel.
+
+    Every walker screen shows the switch, so this stays one indexed read.
+
+    O(1): at most one heartbeat row is read.
+
+    Args:
+        user: The authenticated walker named in the path.
+        supabase: The Supabase client.
+        now: The current time (dependency, frozen in tests).
+
+    Returns:
+        ``{online, updatedAt}``; ``updatedAt`` is null while offline.
+    """
+    position = _position_for(supabase, user.id)
+    online = walker_access.is_online(position, now)
+    return {
+        "online": online,
+        "updatedAt": position.get("updated_at") if online and position else None,
     }
 
 
@@ -524,6 +660,24 @@ def _period_range(period: str, today: date) -> tuple[date, date] | None:
     return None
 
 
+def _previous_range(period: str, start: date) -> tuple[date, date]:
+    """The inclusive range of the period right before one starting at ``start``. O(1).
+
+    Args:
+        period: ``day``, ``week`` or ``month``.
+        start: The first day of the current period.
+
+    Returns:
+        The first and last day of the previous period.
+    """
+    end = start - timedelta(days=1)
+    if period == "day":
+        return end, end
+    if period == "week":
+        return end - timedelta(days=6), end
+    return end.replace(day=1), end
+
+
 def _each_day(start: date, end: date) -> list[date]:
     """List every inclusive date from ``start`` to ``end``. O(days)."""
     days: list[date] = []
@@ -557,7 +711,9 @@ def get_earnings(
         now: The current time (dependency, frozen in tests).
 
     Returns:
-        The period, bounds, commission and per-day totals.
+        The period, bounds, commission, per-day totals, the previous
+        period's totals, the best day, the average per walk, the weekly goal
+        and, for ``day`` only, that day's finished walks.
 
     Raises:
         HTTPException: 400 for an unknown period.
@@ -590,6 +746,15 @@ def get_earnings(
         and (day := _local_date(row.get("requested_time"))) is not None
         and start <= day <= end
     ]
+    prev_start, prev_end = _previous_range(period, start)
+    prev_rows = [
+        row
+        for row in walks
+        if row.get("status") == "done"
+        and (day := _local_date(row.get("requested_time"))) is not None
+        and prev_start <= day <= prev_end
+    ]
+    prev_gross = sum(_agreed_price(row, prices) for row in prev_rows)
 
     per_day: dict[date, list[dict[str, Any]]] = {
         day: [] for day in _each_day(start, end)
@@ -617,6 +782,43 @@ def get_earnings(
         )
 
     commission = _commission(total_gross)
+    net = total_gross - commission
+
+    best = max(by_day, key=lambda day: day["netCop"], default=None)
+    best_day = (
+        {"date": best["date"], "netCop": best["netCop"]}
+        if best is not None and best["netCop"] > 0
+        else None
+    )
+
+    profiles = run_query(
+        supabase.table(WALKER_PROFILES_TABLE)
+        .select("walker_id,weekly_goal_cop")
+        .eq("walker_id", user.id)
+    )
+    goal = profiles[0].get("weekly_goal_cop") if profiles else None
+
+    day_walks: list[dict[str, Any]] | None = None
+    if period == "day":
+        dog_ids = sorted({str(row["dog_id"]) for row in done if row.get("dog_id")})
+        dog_names: dict[str, str | None] = {}
+        if dog_ids:
+            for row in run_query(
+                supabase.table(DOGS_TABLE).select("id,name").in_("id", dog_ids)
+            ):
+                dog_names[str(row["id"])] = row.get("name")
+        day_walks = []
+        for row in sorted(done, key=_sort_key):
+            gross = _agreed_price(row, prices)
+            day_walks.append(
+                {
+                    "id": row["id"],
+                    "dogName": dog_names.get(str(row.get("dog_id"))),
+                    "requestedTime": row.get("requested_time"),
+                    "netCop": gross - _commission(gross),
+                }
+            )
+
     return {
         "period": period,
         "from": start.isoformat(),
@@ -626,6 +828,55 @@ def get_earnings(
         "walks": total_walks,
         "grossCop": total_gross,
         "commissionCop": commission,
-        "netCop": total_gross - commission,
+        "netCop": net,
         "byDay": by_day,
+        "previous": {
+            "walks": len(prev_rows),
+            "netCop": prev_gross - _commission(prev_gross),
+        },
+        "bestDay": best_day,
+        "avgPerWalkCop": net // total_walks if total_walks else 0,
+        "goalCop": goal if isinstance(goal, int) else None,
+        "dayWalks": day_walks,
     }
+
+
+@router.put("/walkers/{walkerId}/goal", response_model=GoalResponse)
+@limiter.limit("10/minute")
+def set_goal(
+    request: Request,
+    body: GoalBody,
+    user: User = Depends(walker_access.walker_from_path),
+    supabase: Client = Depends(get_supabase),
+) -> dict:
+    """Save the walker's weekly net earnings goal.
+
+    O(1): one profile row is read and updated.
+
+    Args:
+        request: The incoming request, read by the rate limiter.
+        body: The goal in COP.
+        user: The authenticated walker named in the path.
+        supabase: The Supabase client.
+
+    Returns:
+        The saved goal.
+
+    Raises:
+        HTTPException: 400 out of range, 409 without a walker profile.
+    """
+    _ = request
+    if not GOAL_MIN_COP <= body.goalCop <= GOAL_MAX_COP:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=BAD_GOAL_MESSAGE
+        )
+    rows = run_query(
+        supabase.table(WALKER_PROFILES_TABLE)
+        .update({"weekly_goal_cop": body.goalCop})
+        .eq("walker_id", user.id)
+    )
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=NO_PROFILE_MESSAGE
+        )
+    return {"goalCop": body.goalCop}

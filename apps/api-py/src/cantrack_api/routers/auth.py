@@ -13,7 +13,7 @@ from supabase_auth.errors import AuthError
 from supabase_auth.types import User
 
 from ..app import limiter
-from ..deps import current_role, get_auth_client, get_current_user, get_now, get_supabase
+from ..deps import account_roles, current_role, get_auth_client, get_current_user, get_now, get_supabase
 from ..login_guard import LoginGuard, get_login_guard
 from ..schemas import (
     ChangePasswordBody,
@@ -35,7 +35,6 @@ RESET_SENT_MESSAGE = "Password reset email sent."
 INVALID_CREDENTIALS_MESSAGE = "Invalid login credentials."
 SIGNUP_FAILED_MESSAGE = "We couldn't create an account with those details."
 SIGNUP_ROLLBACK_MESSAGE = "We couldn't finish creating your account. Please try again."
-ROLE_ALREADY_SET_MESSAGE = "This account already has a role."
 ROLE_SAVE_FAILED_MESSAGE = "We couldn't save your role. Please try again."
 NOT_CONFIRMED_MESSAGE = "Confirm your email first. We can send the link again."
 LOCKED_MESSAGE = "Too many failed attempts. Try again in 15 minutes."
@@ -117,7 +116,12 @@ def signup(
         HTTPException: 400 if the signup fails, 503 if the server-side
             role cannot be stored.
     """
-    options: dict[str, Any] = {"data": {"role": body.role}}
+    metadata: dict[str, Any] = {"role": body.role}
+    if body.fullName is not None:
+        metadata["full_name"] = body.fullName
+    if body.phone is not None:
+        metadata["phone"] = body.phone
+    options: dict[str, Any] = {"data": metadata}
     redirect_to = os.environ.get("AUTH_EMAIL_REDIRECT_URL")
     if redirect_to:
         options["email_redirect_to"] = redirect_to
@@ -141,7 +145,7 @@ def signup(
     if user is not None:
         try:
             supabase.auth.admin.update_user_by_id(
-                user.id, {"app_metadata": {"role": body.role}}
+                user.id, {"app_metadata": {"role": body.role, "roles": [body.role]}}
             )
         except Exception as exc:
             logger.exception("signup: storing the role failed, rolling back %s", user.id)
@@ -153,10 +157,30 @@ def signup(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=SIGNUP_ROLLBACK_MESSAGE,
             ) from exc
+    if user is not None and body.role == "owner" and (body.fullName or body.phone):
+        _seed_owner_profile(user.id, body.fullName, body.phone)
     return {
         "user": user.model_dump(mode="json") if user is not None else None,
         "session": session.model_dump(mode="json") if session is not None else None,
     }
+
+
+def _seed_owner_profile(owner_id: str, full_name: str | None, phone: str | None) -> None:
+    """Best-effort: store the signup name and phone on the owner's profile row.
+
+    A failure is only logged; the account already exists and the owner can
+    fill both in Perfil. Walkers keep them in the user metadata because their
+    profile row needs a price first.
+    """
+    values: dict[str, Any] = {"owner_id": owner_id}
+    if full_name:
+        values["display_name"] = full_name
+    if phone:
+        values["phone"] = phone
+    try:
+        get_supabase().table("owner_profiles").upsert(values).execute()
+    except Exception:
+        logger.exception("signup: seeding the owner profile failed for %s", owner_id)
 
 
 @router.post("/login")
@@ -436,7 +460,15 @@ def set_role(
     user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase),
 ) -> dict[str, Any]:
-    """Assign the caller's server-side role exactly once. O(1).
+    """Grant the caller a role, or switch to one they hold, and make it active. O(1).
+
+    One email may be both owner and walker. The first call gives an account
+    without a role its role; a later call with the other role adds it, and a
+    call with a held role just switches to it. ``app_metadata.role`` is the
+    active role every endpoint checks; ``app_metadata.roles`` lists them all.
+    Acting on your own walk is refused where it happens (a walker cannot bid
+    on, see, or be sent their own requests), so holding both roles grants
+    nothing a second account would not.
 
     Args:
         body: The requested role, which must be ``owner`` or ``walker``.
@@ -444,20 +476,18 @@ def set_role(
         supabase: The Supabase client used for the admin role update.
 
     Returns:
-        The assigned ``role``.
+        The active ``role`` and every granted ``roles``.
 
     Raises:
-        HTTPException: 409 when the account already has a server-side role,
-            503 when the admin update fails. A role other than owner/walker
-            is a 400 from the schema.
+        HTTPException: 503 when the admin update fails. A role other than
+            owner/walker is a 400 from the schema.
     """
-    if current_role(user) is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=ROLE_ALREADY_SET_MESSAGE
-        )
+    roles = sorted({*account_roles(user), body.role})
+    if current_role(user) == body.role and roles == account_roles(user):
+        return {"role": body.role, "roles": roles}
     try:
         supabase.auth.admin.update_user_by_id(
-            user.id, {"app_metadata": {"role": body.role}}
+            user.id, {"app_metadata": {"role": body.role, "roles": roles}}
         )
     except Exception as exc:
         logger.exception("auth/role: admin update failed for %s", user.id)
@@ -465,4 +495,4 @@ def set_role(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=ROLE_SAVE_FAILED_MESSAGE,
         ) from exc
-    return {"role": body.role}
+    return {"role": body.role, "roles": roles}

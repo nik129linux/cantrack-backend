@@ -63,3 +63,32 @@ class TestOffers:
         res = fake_client.get("/bidding/requests/walk-1/offers", headers=bearer("token-b"))
         assert res.status_code == 403
         assert res.json() == {"detail": "Not your walk request."}
+
+
+class TestWalkerCardOnOffers:
+    """What the walker wrote on Perfil travels with each offer to the owner."""
+
+    def test_bio_area_experience_sizes_and_walks_done(self, fake_client, fake):
+        seed_open(fake)
+        place(fake, "walker-w")
+        fake.seed("walker_profiles", walker_id="walker-w", display_name="Mateo", price_per_walk=20000,
+                  bio="Paseo perros grandes", service_area="Centro", experience_years=3,
+                  dog_sizes=["large", "small"])
+        fake.seed("walk_requests", id="old-1", owner_id="owner-z", walker_id="walker-w", status="done")
+        fake.seed("walk_requests", id="old-2", owner_id="owner-z", walker_id="walker-w", status="cancelled")
+        fake_client.post("/bidding/requests/walk-1/offers", json={"priceCop": 30000, "etaMin": 15.0},
+                         headers=bearer("token-w"))
+        offer = fake_client.get("/bidding/requests/walk-1/offers", headers=bearer("token-a")).json()[0]
+        assert {key: offer[key] for key in ("walkerName", "walkerBio", "walkerArea", "walkerExperienceYears",
+                                            "walkerDogSizes", "walkerWalksDone")} == {
+            "walkerName": "Mateo", "walkerBio": "Paseo perros grandes", "walkerArea": "Centro",
+            "walkerExperienceYears": 3, "walkerDogSizes": ["small", "large"], "walkerWalksDone": 1,
+        }
+
+    def test_a_walker_without_a_profile_gets_empty_fields(self, fake_client, fake):
+        seed_open(fake)
+        place(fake, "walker-w")
+        fake_client.post("/bidding/requests/walk-1/offers", json={"priceCop": 30000, "etaMin": 15.0},
+                         headers=bearer("token-w"))
+        offer = fake_client.get("/bidding/requests/walk-1/offers", headers=bearer("token-a")).json()[0]
+        assert (offer["walkerBio"], offer["walkerDogSizes"], offer["walkerWalksDone"]) == (None, [], 0)
