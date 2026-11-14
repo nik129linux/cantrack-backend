@@ -44,6 +44,7 @@ NOT_FOUND_MESSAGE = "Request not found."
 DOG_NOT_FOUND_MESSAGE = "Dog not found."
 PROFILE_NOT_FOUND_MESSAGE = "Walker profile not found."
 OWNER_ROLE_MESSAGE = "Only owners can create a walk request."
+SELF_REQUEST_MESSAGE = "You cannot send a walk request to yourself."
 ROLE_MESSAGE = "Unsupported role."
 TIME_MESSAGE = "requestedTime must be an ISO-8601 datetime with a timezone offset."
 FUTURE_MESSAGE = "requestedTime must be in the future."
@@ -221,6 +222,11 @@ def create_request(
             status_code=status.HTTP_400_BAD_REQUEST, detail=OWNER_ROLE_MESSAGE
         )
 
+    if body.walkerId == user.id:
+        # One email may be both owner and walker; it still can't walk its own dog for pay.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=SELF_REQUEST_MESSAGE
+        )
     dog = first_row(
         run_query(
             supabase.table(DOGS_TABLE)

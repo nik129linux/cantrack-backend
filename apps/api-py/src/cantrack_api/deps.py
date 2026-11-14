@@ -194,3 +194,26 @@ def current_role(user: User) -> str | None:
     metadata = getattr(user, "app_metadata", None) or {}
     role = metadata.get("role")
     return role if role in ROLES else None
+
+
+def account_roles(user: User) -> list[str]:
+    """Every role the server granted this account, active one included. O(1).
+
+    One email may be both owner and walker. ``app_metadata.role`` is the role
+    the account is acting as right now (what ``current_role`` returns);
+    ``app_metadata.roles`` lists every role it holds. Accounts made before
+    ``roles`` existed only carry ``role``, which then counts as the list.
+
+    Args:
+        user: The authenticated Supabase user.
+
+    Returns:
+        The granted roles in a stable order (owner first), possibly empty.
+    """
+    metadata = getattr(user, "app_metadata", None) or {}
+    stored = metadata.get("roles")
+    granted = {role for role in stored if role in ROLES} if isinstance(stored, list) else set()
+    active = current_role(user)
+    if active is not None:
+        granted.add(active)
+    return sorted(granted)

@@ -28,8 +28,7 @@ PROFILE = {"displayName": "Nico Walks", "bio": None, "serviceArea": "Laureles", 
 BIDDING_BODY = {"dogId": "dog-1", "windowStart": T10, "durationHours": 1, "priceCop": 30000,
                 "pickupLat": 6.2, "pickupLng": -75.5}
 
-ROLE_SET = {"role": "owner"}
-ROLE_ALREADY_SET = {"detail": "This account already has a role."}
+ROLE_SET = {"role": "owner", "roles": ["owner"]}
 
 
 @pytest.fixture
@@ -128,7 +127,7 @@ class TestSignupAssignsTheRoleServerSide:
         res = client.post("/auth/signup", json={"email": "o@example.com", "password": "my dog runs fast", "role": "owner"})
         assert res.status_code == 201
         supabase.auth.admin.update_user_by_id.assert_called_once_with(
-            "new-user", {"app_metadata": {"role": "owner"}}
+            "new-user", {"app_metadata": {"role": "owner", "roles": ["owner"]}}
         )
 
     def test_signup_rolls_back_the_account_when_the_role_cannot_be_stored(self, client, supabase):
@@ -145,7 +144,8 @@ class TestOneShotRoleForOAuthAccounts:
         res = fake_client.post("/auth/role", json={"role": "owner"}, headers=bearer("token-nobody"))
         assert res.status_code == 200
         assert res.json() == ROLE_SET
-        assert ("update", "nobody-2", {"app_metadata": {"role": "owner"}}) in spoofers.auth.admin.calls
+        assert ("update", "nobody-2", {"app_metadata": {"role": "owner", "roles": ["owner"]}}) \
+            in spoofers.auth.admin.calls
 
     def test_the_picked_role_is_then_honoured(self, fake_client, spoofers):
         fake_client.post("/auth/role", json={"role": "owner"}, headers=bearer("token-nobody"))
@@ -154,11 +154,33 @@ class TestOneShotRoleForOAuthAccounts:
                                headers=bearer("token-nobody"))
         assert res.status_code == 201
 
-    def test_role_cannot_be_changed_once_set(self, fake_client, spoofers):
+    def test_an_owner_can_add_the_walker_role(self, fake_client, spoofers):
         res = fake_client.post("/auth/role", json={"role": "walker"}, headers=bearer("token-a"))
-        assert res.status_code == 409
-        assert res.json() == ROLE_ALREADY_SET
+        assert res.status_code == 200
+        assert res.json() == {"role": "walker", "roles": ["owner", "walker"]}
+        assert ("update", "owner-a", {"app_metadata": {"role": "walker", "roles": ["owner", "walker"]}}) \
+            in spoofers.auth.admin.calls
+
+    def test_switching_back_keeps_both_roles(self, fake_client, spoofers):
+        fake_client.post("/auth/role", json={"role": "walker"}, headers=bearer("token-a"))
+        res = fake_client.post("/auth/role", json={"role": "owner"}, headers=bearer("token-a"))
+        assert res.json() == {"role": "owner", "roles": ["owner", "walker"]}
+
+    def test_picking_the_active_role_writes_nothing(self, fake_client, spoofers):
+        res = fake_client.post("/auth/role", json={"role": "owner"}, headers=bearer("token-a"))
+        assert res.status_code == 200
         assert spoofers.auth.admin.calls == []
+
+    def test_dual_account_cannot_bid_on_its_own_walk(self, fake_client, spoofers):
+        fake_client.post("/auth/role", json={"role": "walker"}, headers=bearer("token-a"))
+        res = fake_client.post("/bidding/requests/walk-1/offers", json={"priceCop": 30000, "etaMin": 10},
+                               headers=bearer("token-a"))
+        assert res.status_code >= 400
+        assert not [q for q in spoofers.queries if q[:2] == ("walk_offers", "insert")]
+
+    def test_account_roles_reads_app_metadata_only(self):
+        assert deps.account_roles(make_user("u", "u@example.com", "walker")) == ["walker"]
+        assert deps.account_roles(make_spoofed_user("u", "u@example.com", None, "walker")) == []
 
     def test_legacy_claim_does_not_count_as_a_role(self, fake_client, spoofers):
         # user_metadata says walker, app_metadata is empty: the account may still pick once.

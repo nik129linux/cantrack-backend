@@ -486,6 +486,9 @@ def list_open_requests(
     for walk_request in walk_requests:
         if datetime.fromisoformat(walk_request["deadline_at"]) <= now:
             continue
+        # An account that is also an owner never sees its own walks to bid on.
+        if walk_request["owner_id"] == user.id:
+            continue
         nearby_walkers: Quadtree[str] = Quadtree(*QUADTREE_BOUNDS)
         for position in position_rows:
             east, north = project_to_metres(
