@@ -46,7 +46,8 @@ from ..bidding_eligibility import (
 from ..db import first_row, run_query
 from ..deps import current_role, get_current_user, get_now, get_supabase, get_text_model
 from ..geo import haversine_km
-from ..walker_access import is_online
+from ..walker_access import ensure_walker_profile, is_online
+from .profile import avatar_urls
 from ..walk_report import build_and_store_walk_report
 from ..replay import (
     BACKWARD,
@@ -799,6 +800,8 @@ def send_offer(
         walk_request["pickup_lng"],
     )
 
+    # The owner's pick assigns walker_id, which must exist in walker_profiles.
+    ensure_walker_profile(supabase, user)
     rows = run_query(
         supabase.table(OFFERS_TABLE).insert(
             {
@@ -912,6 +915,9 @@ def list_offers(
         ):
             walks_done[done_row["walker_id"]] = walks_done.get(done_row["walker_id"], 0) + 1
 
+    photos = avatar_urls(
+        supabase, (profile_row.get("avatar_path") for profile_row in profiles_by_walker.values())
+    )
     offer_map = {offer.offer_id: offer for offer in walk_offers}
     ranked_offers: list[dict[str, Any]] = []
     for offer_id in ranked_ids:
@@ -927,6 +933,7 @@ def list_offers(
                 "offerId": offer_id,
                 "walkerId": offer.walker_id,
                 "walkerName": profile.get("display_name"),
+                "walkerAvatarUrl": photos.get(profile.get("avatar_path") or ""),
                 "priceCop": offer_row["price_cop"],
                 "etaMin": offer_row["eta_min"],
                 "distanceKm": offer.distance_km,

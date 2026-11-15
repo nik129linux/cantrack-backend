@@ -10,13 +10,20 @@ IS the switch (going offline deletes it), and a row older than
 ``ONLINE_TTL_SECONDS`` means the app stopped sending, so the walker is offline.
 """
 
+import logging
 from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import Depends, HTTPException, Path, status
+from supabase import Client
 from supabase_auth.types import User
 
+from .db import run_query
 from .deps import current_role, get_current_user
+
+logger = logging.getLogger(__name__)
+
+PROFILES_TABLE = "walker_profiles"
 
 WALKERS_ONLY_MESSAGE = "Only walkers can use this."
 NOT_YOUR_ACCOUNT_MESSAGE = "You can only access your own account."
@@ -47,6 +54,44 @@ def walker_from_path(
     if walker_id != user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NOT_YOUR_ACCOUNT_MESSAGE)
     return user
+
+
+#: Reference price a profile starts with until the walker sets theirs in Perfil.
+STARTER_PRICE_COP = 20000
+
+
+def ensure_walker_profile(supabase: Client, user: User) -> None:
+    """Give a walker without a ``walker_profiles`` row a starter one. O(1).
+
+    ``walk_requests.walker_id`` references ``walker_profiles``, so an owner
+    picking an offer from a walker who never saved Perfil (a fresh signup, or
+    an owner who just switched to walker) failed with a 500. The row starts
+    with the signup name, or the email's local part, and
+    ``STARTER_PRICE_COP``; the walker edits both in Perfil. The name is shown
+    to owners, not trusted for anything, so reading ``user_metadata`` is fine.
+
+    Args:
+        supabase: The service-role client.
+        user: The walker about to make an offer.
+    """
+    existing = run_query(
+        supabase.table(PROFILES_TABLE).select("walker_id").eq("walker_id", user.id)
+    )
+    if existing:
+        return
+    metadata = getattr(user, "user_metadata", None) or {}
+    name = str(metadata.get("full_name") or "").strip()
+    if not name:
+        name = (user.email or "Paseador").split("@", 1)[0]
+    try:
+        run_query(
+            supabase.table(PROFILES_TABLE).insert(
+                {"walker_id": user.id, "display_name": name[:80], "price_per_walk": STARTER_PRICE_COP}
+            )
+        )
+    except Exception:
+        # A concurrent offer created it first; the row exists either way.
+        logger.info("walker profile for %s already created", user.id)
 
 
 def is_online(position: dict[str, Any] | None, now: datetime) -> bool:

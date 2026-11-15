@@ -23,7 +23,10 @@ class BiddingConfig:
     Big-O: construction and field access are O(1).
     """
 
-    radius_km: float = 2.0
+    # 8 km spans all of urban Pasto from any neighbourhood; 2 km hid owners a
+    # short drive away (a real 3.4 km pair never saw each other). Offers are
+    # still ranked by distance, so the nearest walker keeps winning.
+    radius_km: float = 8.0
     detour_limit_min: float = 10.0
     auto_pick_after_min: float = 10.0
     walker_capacity: int = 4

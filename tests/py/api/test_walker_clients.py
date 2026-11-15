@@ -71,7 +71,7 @@ class TestList:
     def test_item_shape_and_money_at_my_price(self, fake_client, data):
         camila = [c for c in clients(fake_client).json() if c["ownerId"] == "owner-a"][0]
         assert camila == {
-            "ownerId": "owner-a", "ownerName": "Camila",
+            "ownerId": "owner-a", "ownerName": "Camila", "ownerAvatarUrl": None,
             "dogs": [{"id": "dog-luna", "name": "Luna"}, {"id": "dog-max", "name": "Max"}],
             "walksDone": 2, "upcoming": 1, "lastWalkAt": T_MID, "nextWalkAt": T_NEXT,
             "grossCop": 35000,

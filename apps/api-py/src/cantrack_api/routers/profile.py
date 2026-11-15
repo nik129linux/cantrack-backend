@@ -6,6 +6,8 @@ format is camelCase; ``owner_profiles`` is snake_case with one row per owner.
 """
 
 import io
+import logging
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Any, Literal
 
@@ -21,6 +23,8 @@ from ..app import limiter
 from ..db import first_row, run_query
 from ..deps import get_now, get_supabase
 from ..owner_access import owner_from_path
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -305,6 +309,43 @@ def _known_walker_ids(supabase: Client, owner_id: str) -> set[str]:
         supabase.table(WALK_REQUESTS_TABLE).select("walker_id").eq("owner_id", owner_id)
     )
     return {walk["walker_id"] for walk in walks if walk.get("walker_id")}
+
+
+def avatar_urls(supabase: Client, paths: Iterable[str | None]) -> dict[str, str]:
+    """Sign every avatar a list shows, in one storage call. O(n).
+
+    Lists (Clientes, offers, Mis paseos) show other people's photos, so each
+    row needs a signed URL. A photo is decoration there: anything that fails
+    is simply left out and the row falls back to the initial, never a 500.
+
+    Args:
+        supabase: The service-role client.
+        paths: ``avatar_path`` values; ``None`` and duplicates are skipped.
+
+    Returns:
+        ``{path: one-hour signed URL}`` for the paths that could be signed.
+    """
+    wanted = sorted({path for path in paths if path})
+    if not wanted:
+        return {}
+    bucket = supabase.storage.from_(AVATAR_BUCKET)
+    signed: dict[str, str] = {}
+    try:
+        many = getattr(bucket, "create_signed_urls", None)
+        if many is not None:
+            for row in many(wanted, SIGNED_URL_SECONDS):
+                url = row.get("signedURL") or row.get("signedUrl")
+                if url and not row.get("error"):
+                    signed[row["path"]] = url
+            return signed
+        for path in wanted:
+            try:
+                signed[path] = bucket.create_signed_url(path, SIGNED_URL_SECONDS)["signedURL"]
+            except StorageApiError:
+                continue
+    except Exception:
+        logger.exception("avatar_urls: signing %d avatars failed", len(wanted))
+    return signed
 
 
 def _signed_avatar(supabase: Client, path: str | None) -> str | None:
