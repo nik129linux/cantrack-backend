@@ -25,7 +25,7 @@ from supabase_auth.types import User
 
 from ..app import limiter
 from ..db import first_row, run_query
-from ..deps import get_now, get_supabase
+from ..deps import get_current_user, get_now, get_supabase
 from ..walker_access import walker_from_path
 from .profile import (
     MAX_AVATAR_BYTES,
@@ -321,6 +321,67 @@ def _view(
         consent=Consent(version=version, at=at) if version is not None and at else None,
         stats=stats,
         reviews=reviews,
+    )
+
+
+class PublicReview(BaseModel):
+    """One rating as other owners see it: no owner name travels."""
+
+    rating: float
+    at: str
+    dogName: str | None
+
+
+class PublicWalkerProfile(BaseModel):
+    """What any signed-in user may see of a walker (no phone, no email)."""
+
+    walkerId: str
+    displayName: str | None
+    bio: str | None
+    serviceArea: str | None
+    pricePerWalk: int | None
+    avatarUrl: str | None
+    experienceYears: int | None
+    dogSizes: list[str]
+    memberSince: str | None
+    stats: Stats
+    reviews: list[PublicReview]
+
+
+@router.get("/walkers/{walkerId}/public", response_model=PublicWalkerProfile)
+@limiter.limit("60/minute")
+def get_public_walker_profile(
+    request: Request,
+    walkerId: str,
+    _user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+) -> PublicWalkerProfile:
+    """A walker's public card, opened from an offer or a walk (owner side).
+
+    O(n) in the walker's walk and rating rows, like the private profile.
+
+    Raises:
+        HTTPException: 404 if the walker has no profile.
+    """
+    row = _profile_row(supabase, walkerId)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=SAVED_MESSAGE)
+    stats, reviews = _track_record(supabase, walkerId)
+    return PublicWalkerProfile(
+        walkerId=walkerId,
+        displayName=row.get("display_name"),
+        bio=row.get("bio"),
+        serviceArea=row.get("service_area"),
+        pricePerWalk=row.get("price_per_walk"),
+        avatarUrl=_signed_avatar(supabase, row.get("avatar_path")),
+        experienceYears=row.get("experience_years"),
+        dogSizes=_sizes(row.get("dog_sizes")),
+        memberSince=row.get("created_at"),
+        stats=stats,
+        reviews=[
+            PublicReview(rating=review.rating, at=review.at, dogName=review.dogName)
+            for review in reviews
+        ],
     )
 
 

@@ -254,3 +254,34 @@ class TestConsent:
         put_profile(fake_client, FULL)
         res = fake_client.post("/walkers/walker-w/consent", json={"version": version}, headers=bearer("token-w"))
         assert res.status_code == 400
+
+
+class TestPublicProfile:
+    """What an owner sees when they tap a walker: no phone, no email, no owner names."""
+
+    def test_an_owner_sees_the_public_card(self, fake_client, data):
+        put_profile(fake_client, FULL)
+        res = fake_client.get("/walkers/walker-w/public", headers=bearer("token-a"))
+        assert res.status_code == 200
+        body = res.json()
+        assert body["displayName"] == "Mateo"
+        assert body["bio"] == "Paseo perros grandes"
+        assert body["pricePerWalk"] == 18000
+        assert "phone" not in body
+        assert "email" not in body
+        assert body["stats"]["walksDone"] == 0
+
+    def test_reviews_carry_no_owner_name(self, fake_client, data):
+        put_profile(fake_client, FULL)
+        data.seed("walk_requests", id="w1", walker_id="walker-w", owner_id="owner-a",
+                  dog_id=None, status="done", duration_hours=1)
+        data.seed("walk_ratings", walker_id="walker-w", walk_request_id="w1",
+                  rating=5, created_at="2026-11-01T10:00:00+00:00")
+        reviews = fake_client.get("/walkers/walker-w/public", headers=bearer("token-a")).json()["reviews"]
+        assert reviews == [{"rating": 5.0, "at": "2026-11-01T10:00:00+00:00", "dogName": None}]
+
+    def test_unknown_walker_is_404(self, fake_client, data):
+        assert fake_client.get("/walkers/nobody/public", headers=bearer("token-a")).status_code == 404
+
+    def test_needs_a_session(self, fake_client, data):
+        assert fake_client.get("/walkers/walker-w/public").status_code == 401

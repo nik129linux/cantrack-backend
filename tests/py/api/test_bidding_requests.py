@@ -41,6 +41,21 @@ class TestPostOpenRequest:
     def test_unknown_dog_is_404(self, fake_client, fake):
         assert post_open(fake_client).status_code == 404
 
+    def test_payment_method_is_stored_and_echoed(self, fake_client, fake):
+        seed_dog(fake)
+        res = post_open(fake_client, paymentMethod="nequi")
+        assert res.status_code == 201
+        assert res.json()["paymentMethod"] == "nequi"
+        assert fake.tables["walk_requests"][0]["payment_method"] == "nequi"
+
+    def test_without_payment_method_it_is_null(self, fake_client, fake):
+        seed_dog(fake)
+        assert post_open(fake_client).json()["paymentMethod"] is None
+
+    def test_unknown_payment_method_is_422(self, fake_client, fake):
+        seed_dog(fake)
+        assert post_open(fake_client, paymentMethod="bitcoin").status_code in (400, 422)
+
     def test_past_window_is_400(self, fake_client, fake):
         seed_dog(fake)
         assert post_open(fake_client, windowStart="2026-09-01T10:00:00+00:00").status_code == 400

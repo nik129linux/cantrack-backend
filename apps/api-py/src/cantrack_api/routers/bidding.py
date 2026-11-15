@@ -169,6 +169,7 @@ class OpenRequestCardView(BaseModel):
     pickupLat: float
     pickupLng: float
     deadlineAt: str
+    paymentMethod: str | None = None
     dogName: str | None = None
     ownerName: str | None = None
     fareCop: int
@@ -223,6 +224,7 @@ def _open_view(row: dict[str, Any]) -> dict[str, Any]:
         "pickupLat": row["pickup_lat"],
         "pickupLng": row["pickup_lng"],
         "deadlineAt": row["deadline_at"],
+        "paymentMethod": row.get("payment_method"),
     }
 
 
@@ -391,6 +393,11 @@ def create_bidding_request(
                 "pickup_lat": body.pickupLat,
                 "pickup_lng": body.pickupLng,
                 "price_cop": body.priceCop,
+                **(
+                    {"payment_method": body.paymentMethod}
+                    if body.paymentMethod is not None
+                    else {}
+                ),
             }
         )
     )
