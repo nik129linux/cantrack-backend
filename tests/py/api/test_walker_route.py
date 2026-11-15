@@ -123,8 +123,14 @@ class TestStops:
             "requestId": "w15", "dogName": "Max", "status": "assigned", "requestedTime": AT_15,
             "pickupLat": 6.218, "pickupLng": -75.5, "legKm": 1.0, "legMinutes": 13, "legSource": "straight",
             "durationHours": 1.0, "netCop": 18000, "ownerName": None, "ownerPhone": None,
-            "pickupLabel": None,
+            "pickupLabel": None, "enRouteAt": None,
         }
+
+    def test_a_stop_carries_the_moment_the_walker_set_off(self, fake_client, data):
+        next(r for r in data.tables["walk_requests"] if r["id"] == "w11")["en_route_at"] = "2026-10-05T14:40:00+00:00"
+        stops = {s["requestId"]: s for s in route(fake_client).json()["stops"]}
+        assert stops["w11"]["enRouteAt"] == "2026-10-05T14:40:00+00:00"
+        assert stops["w15"]["enRouteAt"] is None
 
     def test_next_stop_is_the_first_not_done(self, fake_client, data):
         assert route(fake_client).json()["nextStopId"] == "w11"
@@ -317,3 +323,155 @@ class TestStepWording:
     def test_every_turn_reads_in_spanish(self, maneuver, name, text):
         assert step_text(maneuver, name) == text
 
+
+
+class FakePathOsrm:
+    """The multi-stop routing source: one answer for the whole day."""
+
+    def __init__(self):
+        self.calls = []
+        self.fail = False
+        # [lng, lat] pairs, as OSRM sends them; four points along the streets.
+        self.payload = {
+            "routes": [
+                {
+                    "distance": 1900.0,
+                    "duration": 1500.0,
+                    "geometry": {
+                        "coordinates": [
+                            [-77.2811, 1.2136], [-77.2800, 1.2125],
+                            [-77.2790, 1.2150], [-77.2700, 1.2200],
+                        ]
+                    },
+                }
+            ]
+        }
+
+    def foot_path(self, points):
+        self.calls.append(list(points))
+        if self.fail:
+            raise RuntimeError("osrm is down")
+        return self.payload
+
+
+@pytest.fixture
+def path_osrm(fake_client):
+    ROUTE_CACHE.clear()
+    source = FakePathOsrm()
+    fake_client.app.dependency_overrides[get_route_source] = lambda: source
+    yield source
+    ROUTE_CACHE.clear()
+
+
+def pasto_walk(fake, walk_id, status, requested_time, lat, lng):
+    return fake.seed(
+        "walk_requests", id=walk_id, owner_id="owner-a", walker_id="walker-w", dog_id="dog-luna",
+        status=status, requested_time=requested_time, window_end=requested_time,
+        deadline_at=requested_time, duration_hours=1.0, pickup_lat=lat, pickup_lng=lng,
+        price_cop=20000, created_at="2026-09-01T00:00:00+00:00",
+    )
+
+
+@pytest.fixture
+def pasto_day(fake):
+    fake.seed("dogs", id="dog-luna", owner_id="owner-a", name="Luna")
+    fake.seed("walker_positions", walker_id="walker-w", lat=1.2136, lng=-77.2811,
+              updated_at="2026-10-01T00:00:00+00:00")
+    # Out of order on purpose: the day line follows pickup time, not insertion.
+    pasto_walk(fake, "p15", "assigned", AT_15, 1.2200, -77.2700)
+    pasto_walk(fake, "p9", "done", AT_9, 1.2100, -77.2850)
+    pasto_walk(fake, "p11", "assigned", AT_11, 1.2150, -77.2790)
+    return fake
+
+
+def day_path(client, date=DAY, token="token-w", walker_id="walker-w"):
+    params = {"date": date} if date else {}
+    return client.get(f"/walkers/{walker_id}/route/path", params=params, headers=bearer(token))
+
+
+class TestFootProfile:
+    """The public demo server only knows cars (one-way streets); walkers need the foot server."""
+
+    def test_the_default_server_is_the_foot_profile(self):
+        from cantrack_api.navigation import OSRM_URL
+
+        assert "routed-foot" in OSRM_URL
+
+    def test_foot_path_asks_for_every_point_in_one_call(self, monkeypatch):
+        from cantrack_api import navigation
+
+        seen = {}
+
+        class Response:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"routes": []}
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            seen.update(url=url, params=params)
+            return Response()
+
+        monkeypatch.setattr(navigation.httpx, "get", fake_get)
+        navigation.OsrmClient().foot_path([(1.2136, -77.2811), (1.2150, -77.2790), (1.2200, -77.2700)])
+        assert seen["url"].endswith("/route/v1/foot/-77.2811,1.2136;-77.279,1.215;-77.27,1.22")
+        assert seen["params"]["overview"] == "full"
+        assert seen["params"]["geometries"] == "geojson"
+
+
+class TestDayPath:
+    """Rutas: the whole day as one line along the streets, me -> stop -> stop."""
+
+    def test_the_line_comes_from_the_router(self, fake_client, pasto_day, path_osrm):
+        body = day_path(fake_client).json()
+        assert body == {
+            "source": "osrm", "distanceKm": 1.9, "minutes": 25,
+            "geometry": [[1.2136, -77.2811], [1.2125, -77.2800], [1.215, -77.279], [1.22, -77.27]],
+        }
+
+    def test_goes_through_my_position_then_the_live_stops_in_pickup_order(self, fake_client, pasto_day, path_osrm):
+        day_path(fake_client)
+        # p9 is done and must not be walked again.
+        assert path_osrm.calls == [[(1.2136, -77.2811), (1.215, -77.279), (1.22, -77.27)]]
+
+    def test_without_a_position_it_starts_at_the_first_live_stop(self, fake_client, pasto_day, path_osrm):
+        pasto_day.tables["walker_positions"].clear()
+        day_path(fake_client)
+        assert path_osrm.calls == [[(1.215, -77.279), (1.22, -77.27)]]
+
+    def test_the_straight_segments_when_the_router_is_down(self, fake_client, pasto_day, path_osrm):
+        path_osrm.fail = True
+        body = day_path(fake_client).json()
+        assert body["source"] == "straight"
+        assert body["geometry"] == [[1.2136, -77.2811], [1.215, -77.279], [1.22, -77.27]]
+        assert body["distanceKm"] > 0 and body["minutes"] >= 1
+
+    def test_a_single_point_has_nothing_to_draw(self, fake_client, pasto_day, path_osrm):
+        pasto_day.tables["walker_positions"].clear()
+        pasto_day.tables["walk_requests"][:] = [
+            row for row in pasto_day.tables["walk_requests"] if row["id"] != "p15"
+        ]
+        body = day_path(fake_client).json()
+        assert body == {"source": "straight", "distanceKm": 0.0, "minutes": 0, "geometry": []}
+        assert path_osrm.calls == []
+
+    def test_the_same_day_is_only_routed_once(self, fake_client, pasto_day, path_osrm):
+        day_path(fake_client)
+        day_path(fake_client)
+        assert len(path_osrm.calls) == 1
+
+    def test_stops_outside_pasto_are_left_out(self, fake_client, pasto_day, path_osrm):
+        # w-far is in Medellin: the API is never a routing proxy for the world.
+        pasto_walk(pasto_day, "far", "assigned", AT_11, 6.2, -75.5)
+        day_path(fake_client)
+        assert (6.2, -75.5) not in path_osrm.calls[0]
+
+    @pytest.mark.parametrize("date", ["2026-13-01", "tomorrow"])
+    def test_bad_date_is_400(self, fake_client, pasto_day, path_osrm, date):
+        assert day_path(fake_client, date=date).status_code == 400
+
+    @pytest.mark.parametrize("token, walker_id", [("token-v", "walker-w"), ("token-a", "owner-a")])
+    def test_nobody_else(self, fake_client, pasto_day, path_osrm, token, walker_id):
+        pasto_day.add_user("token-v", make_user("walker-v", "walker-v@example.com", "walker"))
+        assert day_path(fake_client, token=token, walker_id=walker_id).status_code == 403

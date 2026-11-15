@@ -17,8 +17,13 @@ from typing import Any
 
 import httpx
 
-#: OSRM base URL. The public demo is for light use; set the env var to self-host.
-OSRM_URL = os.environ.get("CANTRACK_OSRM_URL", "https://router.project-osrm.org").rstrip("/")
+#: OSRM base URL. The public demo (router.project-osrm.org) only serves the car
+#: profile whatever the path says, so it respects one-way streets and sends a
+#: walker the long way round. This server runs the real foot profile. Set the
+#: env var to self-host.
+OSRM_URL = os.environ.get(
+    "CANTRACK_OSRM_URL", "https://routing.openstreetmap.de/routed-foot"
+).rstrip("/")
 
 #: A generic client name. No user, project or contact detail is ever sent.
 USER_AGENT = "CanTrack/1.0 (walking directions)"
@@ -27,7 +32,7 @@ USER_AGENT = "CanTrack/1.0 (walking directions)"
 TIMEOUT_SECONDS = 5.0
 
 #: Cache of parsed routes keyed by both points rounded to ~11 m.
-ROUTE_CACHE: dict[tuple[float, float, float, float], dict[str, Any]] = {}
+ROUTE_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 MAX_CACHE_ENTRIES = 256
 CACHE_MAX_AGE_SECONDS = 30 * 60
 
@@ -49,7 +54,16 @@ def cache_key(from_lat: float, from_lng: float, to_lat: float, to_lng: float) ->
     return (round(from_lat, 4), round(from_lng, 4), round(to_lat, 4), round(to_lng, 4))
 
 
-def cache_get(key: tuple[float, float, float, float], now: datetime) -> dict[str, Any] | None:
+def path_cache_key(points: list[tuple[float, float]]) -> tuple[Any, ...]:
+    """The cache cell of a multi-stop trip: every point rounded to four decimals. O(n).
+
+    The ``"path"`` prefix keeps a two-point day from colliding with the same two
+    points asked through "Cómo llegar", whose answer carries turns.
+    """
+    return ("path", *(round(value, 4) for point in points for value in point))
+
+
+def cache_get(key: tuple[Any, ...], now: datetime) -> dict[str, Any] | None:
     """Return a fresh cached route for the cell, or None. O(1)."""
     entry = ROUTE_CACHE.get(key)
     if entry is None:
@@ -60,7 +74,7 @@ def cache_get(key: tuple[float, float, float, float], now: datetime) -> dict[str
     return entry["route"]
 
 
-def cache_put(key: tuple[float, float, float, float], route: dict[str, Any], now: datetime) -> None:
+def cache_put(key: tuple[Any, ...], route: dict[str, Any], now: datetime) -> None:
     """Store a route, dropping expired entries and then the oldest when full.
 
     O(n) in the cache size (at most ``MAX_CACHE_ENTRIES``), paid only when OSRM
@@ -108,6 +122,39 @@ class OsrmClient:
                 "geometries": "geojson",
                 "steps": "true",
                 "overview": "false",
+                "alternatives": "false",
+            },
+            headers={"User-Agent": USER_AGENT},
+            timeout=TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+    def foot_path(self, points: list[tuple[float, float]]) -> dict[str, Any]:
+        """Fetch one walking line through every point, in order. O(1) calls.
+
+        Used by Rutas: the whole day is one request, so the public server is
+        asked once however many stops there are. Only the line is requested,
+        not the turns.
+
+        Args:
+            points: ``(lat, lng)`` pairs, at least two.
+
+        Returns:
+            The decoded OSRM JSON payload.
+
+        Raises:
+            httpx.HTTPError: On any transport or non-2xx failure.
+            ValueError: When the body is not valid JSON.
+        """
+        path = ";".join(f"{lng},{lat}" for lat, lng in points)
+        response = httpx.get(
+            f"{OSRM_URL}/route/v1/foot/{path}",
+            params={
+                "geometries": "geojson",
+                "steps": "false",
+                "overview": "full",
                 "alternatives": "false",
             },
             headers={"User-Agent": USER_AGENT},
@@ -289,4 +336,30 @@ def parse_route(payload: dict[str, Any]) -> dict[str, Any] | None:
         "minutes": max(1, int(round(duration_min))),
         "geometry": geometry,
         "steps": steps,
+    }
+
+
+def parse_path(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Turn a multi-stop OSRM answer into the line Rutas draws. O(p), p the points.
+
+    Args:
+        payload: The decoded OSRM JSON of a ``foot_path`` call.
+
+    Returns:
+        ``{source, distanceKm, minutes, geometry}`` with ``geometry`` as
+        ``[[lat, lng], ...]``, or None when the payload holds no usable line.
+    """
+    routes = payload.get("routes")
+    if not isinstance(routes, list) or not routes:
+        return None
+    route = routes[0]
+    coordinates = (route.get("geometry") or {}).get("coordinates")
+    if not isinstance(coordinates, list) or len(coordinates) < 2:
+        return None
+    geometry = [[pair[1], pair[0]] for pair in coordinates]
+    return {
+        "source": "osrm",
+        "distanceKm": round(float(route.get("distance") or 0.0) / 1000.0, 3),
+        "minutes": max(1, int(round(float(route.get("duration") or 0.0) / 60.0))),
+        "geometry": geometry,
     }

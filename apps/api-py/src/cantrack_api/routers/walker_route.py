@@ -28,7 +28,9 @@ from ..navigation import (
     cache_put,
     get_route_source,
     inside_pasto,
+    parse_path,
     parse_route,
+    path_cache_key,
 )
 from ..structures import AvlTree, WeightedGraph
 from ..walker_access import walker_from_path
@@ -80,6 +82,8 @@ class StopView(BaseModel):
     pickupLat: float | None
     pickupLng: float | None
     pickupLabel: str | None = None
+    #: When the walker tapped "Voy en camino" on this stop, else None.
+    enRouteAt: str | None = None
     legKm: float
     legMinutes: int
     legSource: str
@@ -120,6 +124,17 @@ class WalkingRouteView(BaseModel):
     #: ``[[lat, lng], ...]`` along the streets.
     geometry: list[list[float]]
     steps: list[NavStepView]
+
+
+class DayPathView(BaseModel):
+    """The whole day as one line along the streets: me, stop, stop..."""
+
+    #: ``osrm`` when the streets were routed, ``straight`` for the direct segments.
+    source: str
+    distanceKm: float
+    minutes: int
+    #: ``[[lat, lng], ...]``; empty when fewer than two points can be routed.
+    geometry: list[list[float]]
 
 
 class ActiveView(BaseModel):
@@ -254,6 +269,17 @@ def _is_overdue(row: dict[str, Any], now: datetime) -> bool:
     return start + timedelta(hours=_hours(row)) < now
 
 
+def _order_by_pickup(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sort walks by pickup time (then id) through the hand-written AVL tree.
+
+    Big-O: O(w log w), w the walks.
+    """
+    tree: AvlTree[tuple[datetime, str], dict[str, Any]] = AvlTree()
+    for row in rows:
+        tree.insert((_parse_stored_time(row["requested_time"]), row["id"]), row)
+    return [row for row in (tree.find(key) for key in tree.inorder_keys()) if row is not None]
+
+
 def _street_graph(supabase: Client) -> WeightedGraph[str]:
     """Build the walk-leg graph from every ``walk_graph_edges`` row. O(E)."""
     graph: WeightedGraph[str] = WeightedGraph()
@@ -358,10 +384,7 @@ def get_day_route(
         default=None,
     )
 
-    tree: AvlTree[tuple[datetime, str], dict[str, Any]] = AvlTree()
-    for row in todays:
-        tree.insert((_parse_stored_time(row["requested_time"]), row["id"]), row)
-    ordered = [row for row in (tree.find(key) for key in tree.inorder_keys()) if row is not None]
+    ordered = _order_by_pickup(todays)
     extra = [walking] if walking is not None else []
 
     dogs = _dogs_by_id(supabase, [row.get("dog_id") for row in [*ordered, *late, *extra]])
@@ -399,6 +422,7 @@ def get_day_route(
                 "pickupLat": row.get("pickup_lat"),
                 "pickupLng": row.get("pickup_lng"),
                 "pickupLabel": row.get("pickup_label"),
+                "enRouteAt": row.get("en_route_at"),
                 "legKm": leg_km,
                 "legMinutes": leg_minutes,
                 "legSource": leg_source,
@@ -527,3 +551,95 @@ def get_walking_route(
 
     cache_put(key, route, now)
     return route
+
+
+@router.get("/walkers/{walkerId}/route/path", response_model=DayPathView)
+@limiter.limit("30/minute")
+def get_day_path(
+    request: Request,
+    date: str | None = Query(default=None),
+    walker: User = Depends(walker_from_path),
+    supabase: Client = Depends(get_supabase),
+    source: Any = Depends(get_route_source),
+    now: datetime = Depends(get_now),
+) -> dict[str, Any]:
+    """Return the whole day as one line along the streets: me, stop, stop...
+
+    The points are the walker's stored position (when there is one) followed by
+    every live (``assigned`` or ``in_walk``) stop of the day in pickup order, so
+    the line agrees with ``/route``. Done stops are not walked again. The
+    points go to the foot router in a single call. Like ``walking-route`` it
+    never fails the caller: when the router is down or answers nothing usable,
+    the straight segments come back with ``source: "straight"``. Points outside
+    Pasto are dropped so the API is never a routing proxy for the world.
+
+    Args:
+        request: The incoming request, read by the rate limiter.
+        date: The local day as ``YYYY-MM-DD``; defaults to today in Bogota.
+        walker: The authenticated walker named in the path.
+        supabase: The Supabase client.
+        source: The routing source (dependency, faked in tests).
+        now: The current time (dependency, frozen in tests).
+
+    Returns:
+        ``{source, distanceKm, minutes, geometry}``; ``geometry`` is empty when
+        fewer than two points are routable.
+
+    Raises:
+        HTTPException: 400 for a malformed date, 403 for a caller who is not
+            the walker in the path, 500 on database errors.
+
+    Big-O: O(w log w + p), w the walker's walks and p the points of the line;
+    O(w) on a cache hit.
+    """
+    day = (
+        _parse_day(date)
+        if date is not None
+        else now.astimezone(BOGOTA_TZ).date().isoformat()
+    )
+    rows = run_query(
+        supabase.table(REQUESTS_TABLE)
+        .select("*")
+        .eq("walker_id", walker.id)
+        .in_("status", sorted(LIVE_STATUSES))
+    )
+    live = _order_by_pickup([row for row in rows if _local_day(row["requested_time"]) == day])
+
+    points: list[tuple[float, float]] = []
+    position_rows = run_query(
+        supabase.table(POSITIONS_TABLE).select("*").eq("walker_id", walker.id)
+    )
+    if position_rows:
+        points.append((position_rows[0]["lat"], position_rows[0]["lng"]))
+    for row in live:
+        if row.get("pickup_lat") is not None and row.get("pickup_lng") is not None:
+            points.append((row["pickup_lat"], row["pickup_lng"]))
+    points = [point for point in points if inside_pasto(point[0], point[1])]
+
+    if len(points) < 2:
+        return {"source": "straight", "distanceKm": 0.0, "minutes": 0, "geometry": []}
+
+    key = path_cache_key(points)
+    cached = cache_get(key, now)
+    if cached is not None:
+        return cached
+
+    line: dict[str, Any] | None = None
+    try:
+        line = parse_path(source.foot_path(points))
+    except Exception:  # noqa: BLE001 - any upstream trouble falls back to the segments
+        line = None
+
+    if line is None:
+        km = sum(
+            haversine_km(a[0], a[1], b[0], b[1]) for a, b in zip(points, points[1:])
+        )
+        return {
+            "source": "straight",
+            "distanceKm": round(km, 3),
+            "minutes": max(1, int(round(km / STRAIGHT_SPEED_KMH * 60))),
+            "geometry": [[lat, lng] for lat, lng in points],
+        }
+
+    cache_put(key, line, now)
+    return line
