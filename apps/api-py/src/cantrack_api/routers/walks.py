@@ -28,6 +28,7 @@ from ..bidding import DEFAULT_CONFIG
 from ..db import first_row, run_query
 from ..deps import current_role, get_current_user, get_now, get_supabase
 from ..owner_access import owner_from_path
+from .profile import avatar_urls
 
 router = APIRouter()
 
@@ -72,6 +73,7 @@ class WalkListItem(BaseModel):
     dogName: str | None
     walkerId: str | None
     walkerName: str | None
+    walkerAvatarUrl: str | None = None
     requestedTime: str
     durationHours: float
     priceCop: int
@@ -124,6 +126,7 @@ class WalkerCard(BaseModel):
 
     id: str | None
     name: str | None
+    avatarUrl: str | None = None
     allTimeRating: float | None
     ratingCount: int
 
@@ -407,6 +410,7 @@ def list_walks(
     profiles = _profiles_by_walker_id(
         supabase, [row["walker_id"] for row in page if row.get("walker_id")]
     )
+    photos = avatar_urls(supabase, (p.get("avatar_path") for p in profiles.values()))
 
     items = []
     for row in page:
@@ -422,6 +426,7 @@ def list_walks(
                 "dogName": dog.get("name"),
                 "walkerId": row.get("walker_id"),
                 "walkerName": profile.get("display_name"),
+                "walkerAvatarUrl": photos.get(profile.get("avatar_path") or ""),
                 "requestedTime": row["requested_time"],
                 "durationHours": row.get("duration_hours"),
                 "priceCop": _agreed_price(row, offers),
@@ -672,6 +677,9 @@ def get_walk_detail(
         "walker": {
             "id": walker_id,
             "name": profile.get("display_name"),
+            "avatarUrl": avatar_urls(supabase, [profile.get("avatar_path")]).get(
+                profile.get("avatar_path") or ""
+            ),
             "allTimeRating": all_time_rating,
             "ratingCount": len(rating_values),
         },

@@ -69,7 +69,8 @@ class TestLists:
                   distance_km=1.0, created_at="2026-09-30T00:00:00+00:00")
         item = self.tab(fake_client, "past").json()["items"][0]
         assert item == {"id": "d1", "status": "done", "dogId": "dog-luna", "dogName": "Luna",
-                        "walkerId": "walker-w", "walkerName": "Mateo", "requestedTime": T10,
+                        "walkerId": "walker-w", "walkerName": "Mateo", "walkerAvatarUrl": None,
+                        "requestedTime": T10,
                         "durationHours": 1.0, "priceCop": 18000, "canRate": True, "hasReport": False,
                         "distanceKm": None, "durationMin": None, "rating": None}
         base.seed("walk_ratings", walk_request_id="d1", walker_id="walker-w", rating=5,
@@ -150,7 +151,8 @@ class TestDetail:
         assert body["id"] == "w1" and body["status"] == "done"
         assert body["requestedTime"] == T10 and body["durationHours"] == 1.0
         assert body["dog"] == {"id": "dog-luna", "name": "Luna"}
-        assert body["walker"] == {"id": "walker-w", "name": "Mateo", "allTimeRating": None, "ratingCount": 0}
+        assert body["walker"] == {"id": "walker-w", "name": "Mateo", "avatarUrl": None,
+                                  "allTimeRating": None, "ratingCount": 0}
         assert body["priceCop"] == 18000
         assert body["offerCount"] == 1
         assert [event["kind"] for event in body["timeline"]] == ["check_in", "check_out"]
