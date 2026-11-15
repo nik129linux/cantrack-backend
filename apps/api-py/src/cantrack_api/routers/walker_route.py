@@ -79,6 +79,7 @@ class StopView(BaseModel):
     requestedTime: str
     pickupLat: float | None
     pickupLng: float | None
+    pickupLabel: str | None = None
     legKm: float
     legMinutes: int
     legSource: str
@@ -97,6 +98,7 @@ class OverdueView(BaseModel):
     durationHours: float
     pickupLat: float | None
     pickupLng: float | None
+    pickupLabel: str | None = None
 
 
 class NavStepView(BaseModel):
@@ -133,6 +135,7 @@ class ActiveView(BaseModel):
     ownerPhone: str | None
     pickupLat: float | None
     pickupLng: float | None
+    pickupLabel: str | None = None
 
 
 class RouteView(BaseModel):
@@ -395,6 +398,7 @@ def get_day_route(
                 "requestedTime": row["requested_time"],
                 "pickupLat": row.get("pickup_lat"),
                 "pickupLng": row.get("pickup_lng"),
+                "pickupLabel": row.get("pickup_label"),
                 "legKm": leg_km,
                 "legMinutes": leg_minutes,
                 "legSource": leg_source,
@@ -427,6 +431,7 @@ def get_day_route(
             "ownerPhone": owner.get("phone"),
             "pickupLat": walking.get("pickup_lat"),
             "pickupLng": walking.get("pickup_lng"),
+            "pickupLabel": walking.get("pickup_label"),
         }
 
     next_stop = next((stop for stop in stops if stop["status"] != "done"), None)
@@ -445,6 +450,7 @@ def get_day_route(
                 "durationHours": _hours(row),
                 "pickupLat": row.get("pickup_lat"),
                 "pickupLng": row.get("pickup_lng"),
+                "pickupLabel": row.get("pickup_label"),
             }
             for row in late
         ],

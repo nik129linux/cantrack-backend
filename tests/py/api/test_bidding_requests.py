@@ -46,6 +46,55 @@ class TestPostOpenRequest:
         assert post_open(fake_client, windowStart="2026-09-01T10:00:00+00:00").status_code == 400
 
 
+class TestPickupLabel:
+    def test_the_label_is_stored_and_returned(self, fake_client, fake):
+        seed_dog(fake)
+        res = post_open(fake_client, pickupLabel="Carrera 27 15-30, Pasto")
+        assert res.status_code == 201
+        assert res.json()["pickupLabel"] == "Carrera 27 15-30, Pasto"
+        assert fake.tables["walk_requests"][0]["pickup_label"] == "Carrera 27 15-30, Pasto"
+
+    def test_it_is_optional_and_null_when_omitted(self, fake_client, fake):
+        seed_dog(fake)
+        res = post_open(fake_client)
+        assert res.status_code == 201
+        assert res.json()["pickupLabel"] is None
+
+    def test_a_blank_label_becomes_null(self, fake_client, fake):
+        seed_dog(fake)
+        assert post_open(fake_client, pickupLabel="   ").json()["pickupLabel"] is None
+
+    def test_the_label_is_trimmed(self, fake_client, fake):
+        seed_dog(fake)
+        assert post_open(fake_client, pickupLabel="  Plaza de Nariño ").json()["pickupLabel"] == "Plaza de Nariño"
+
+    def test_120_characters_fit_and_121_are_400(self, fake_client, fake):
+        seed_dog(fake)
+        assert post_open(fake_client, pickupLabel="x" * 120).status_code == 201
+        assert post_open(fake_client, pickupLabel="x" * 121).status_code == 400
+
+    def test_a_non_string_label_is_400(self, fake_client, fake):
+        seed_dog(fake)
+        assert post_open(fake_client, pickupLabel=123).status_code == 400
+
+    def test_the_walker_inbox_card_carries_the_label(self, fake_client, fake):
+        seed_dog(fake)
+        row = seed_open(fake)
+        row["pickup_label"] = "Plaza de Nariño"
+        fake.seed("walker_positions", walker_id="walker-w", lat=6.201, lng=-75.5,
+                 updated_at="2026-10-01T00:00:00+00:00")
+        card = fake_client.get("/bidding/requests/open", headers=bearer("token-w")).json()[0]
+        assert card["pickupLabel"] == "Plaza de Nariño"
+
+    def test_an_old_row_without_a_label_shows_null(self, fake_client, fake):
+        seed_dog(fake)
+        seed_open(fake)
+        fake.seed("walker_positions", walker_id="walker-w", lat=6.201, lng=-75.5,
+                 updated_at="2026-10-01T00:00:00+00:00")
+        card = fake_client.get("/bidding/requests/open", headers=bearer("token-w")).json()[0]
+        assert card["pickupLabel"] is None
+
+
 class TestVisibleOpenList:
     def test_free_walker_inside_radius_sees_it(self, fake_client, fake):
         seed_dog(fake)
