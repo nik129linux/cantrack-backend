@@ -123,6 +123,7 @@ class TestStops:
             "requestId": "w15", "dogName": "Max", "status": "assigned", "requestedTime": AT_15,
             "pickupLat": 6.218, "pickupLng": -75.5, "legKm": 1.0, "legMinutes": 13, "legSource": "straight",
             "durationHours": 1.0, "netCop": 18000, "ownerName": None, "ownerPhone": None,
+            "pickupLabel": None,
         }
 
     def test_next_stop_is_the_first_not_done(self, fake_client, data):
@@ -185,7 +186,7 @@ class TestOverdue:
         body = route(fake_client).json()
         assert body["overdue"] == [
             {"requestId": "w-late", "dogName": "Luna", "requestedTime": "2026-09-28T14:00:00+00:00",
-             "durationHours": 1.0, "pickupLat": 6.2, "pickupLng": -75.5},
+             "durationHours": 1.0, "pickupLat": 6.2, "pickupLng": -75.5, "pickupLabel": None},
         ]
 
     def test_oldest_first_on_any_day(self, fake_client, data):
@@ -194,6 +195,19 @@ class TestOverdue:
         body = route(fake_client, date="2026-10-20").json()
         assert [late["requestId"] for late in body["overdue"]] == ["w-a", "w-b"]
         assert body["overdue"][0]["dogName"] == "Max"
+
+
+class TestPickupLabel:
+    def test_the_stop_the_overdue_and_the_active_walk_carry_the_label(self, fake_client, data):
+        walk(data, "w-late", "assigned", "2026-09-28T14:00:00+00:00", lat=6.2)
+        walk(data, "w-now", "in_walk", "2026-09-25T14:00:00+00:00", lat=6.25)
+        data.seed("walk_timeline", walk_request_id="w-now", kind="check_in", at="2026-09-30T23:40:00+00:00", payload={})
+        for walk_id in ("w11", "w-late", "w-now"):
+            next(row for row in data.tables["walk_requests"] if row["id"] == walk_id)["pickup_label"] = f"Calle {walk_id}"
+        body = route(fake_client).json()
+        assert next(s for s in body["stops"] if s["requestId"] == "w11")["pickupLabel"] == "Calle w11"
+        assert body["overdue"][0]["pickupLabel"] == "Calle w-late"
+        assert body["active"]["pickupLabel"] == "Calle w-now"
 
 
 class TestOwnerAndPay:
@@ -221,6 +235,7 @@ class TestActive:
             "requestId": "w-now", "dogName": "Luna", "requestedTime": "2026-09-25T14:00:00+00:00",
             "durationHours": 1.0, "startedAt": "2026-09-30T23:40:00+00:00", "netCop": 18000,
             "ownerName": "Camila", "ownerPhone": "3001234567", "pickupLat": 6.25, "pickupLng": -75.5,
+            "pickupLabel": None,
         }
 
     def test_nobody_elses_walk(self, fake_client, data):

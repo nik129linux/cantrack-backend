@@ -212,7 +212,7 @@
           ]
         },
         {
-          "name": "E05 role cannot be re-picked → 409",
+          "name": "E05 one email can hold both roles: switching returns both",
           "request": {
             "method": "POST",
             "header": [
@@ -246,9 +246,54 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"role is set once, server-side\", function () {",
-                  "    pm.response.to.have.status(409);",
+                  "pm.test(\"switch to walker is allowed (one email, two roles)\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"active role is walker and both are held\", function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.role).to.eql(\"walker\");",
+                  "    pm.expect(body.roles).to.have.members([\"owner\", \"walker\"]);",
                   "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E05b switch back to owner (leaves the account as found)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/role",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "role"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"owner\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"switching back is allowed\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"active role is owner again\", function () { pm.expect(pm.response.json().role).to.eql(\"owner\"); });"
                 ]
               }
             }

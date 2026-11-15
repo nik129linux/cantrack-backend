@@ -141,6 +141,91 @@
           ]
         },
         {
+          "name": "Address search (ok, or unavailable when Photon is down)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/geocode/search?q=plaza%20de%20nari%C3%B1o",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "geocode",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "plaza%20de%20nari%C3%B1o"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"shape\", function () { const b = pm.response.json(); pm.expect(b).to.have.all.keys(\"status\", \"results\"); pm.expect([\"ok\", \"unavailable\"]).to.include(b.status); });",
+                  "pm.test(\"every result is a point with a label\", function () { pm.response.json().results.forEach(function (r) { pm.expect(r).to.have.all.keys(\"label\", \"detail\", \"lat\", \"lng\"); pm.expect(r.lat).to.be.within(1.12, 1.3); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reverse lookup of the Pasto centre",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/geocode/reverse?lat=1.2136&lng=-77.2811",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "geocode",
+                "reverse"
+              ],
+              "query": [
+                {
+                  "key": "lat",
+                  "value": "1.2136"
+                },
+                {
+                  "key": "lng",
+                  "value": "-77.2811"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"status\", \"results\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Post a 45-minute request (stores walkId)",
           "request": {
             "method": "POST",
@@ -166,7 +251,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"dogId\": \"{{dogId}}\",\n  \"windowStart\": \"{{windowStart}}\",\n  \"durationMinutes\": 45,\n  \"priceCop\": 15000,\n  \"pickupLat\": 1.2136,\n  \"pickupLng\": -77.2811\n}"
+              "raw": "{\n  \"dogId\": \"{{dogId}}\",\n  \"windowStart\": \"{{windowStart}}\",\n  \"durationMinutes\": 45,\n  \"priceCop\": 15000,\n  \"pickupLat\": 1.2136,\n  \"pickupLng\": -77.2811,\n  \"pickupLabel\": \"Plaza de Nari\\u00f1o\"\n}"
             }
           },
           "event": [
@@ -177,7 +262,8 @@
                 "exec": [
                   "pm.test(\"201\", function () { pm.response.to.have.status(201); });",
                   "pm.environment.set(\"walkId\", pm.response.json().id);",
-                  "pm.test(\"45 min stored as 0.75 h\", function () { pm.expect(pm.response.json().durationHours).to.eql(0.75); });"
+                  "pm.test(\"45 min stored as 0.75 h\", function () { pm.expect(pm.response.json().durationHours).to.eql(0.75); });",
+                  "pm.test(\"the pickup label is stored and returned\", function () { pm.expect(pm.response.json().pickupLabel).to.eql(\"Plaza de Nariño\"); });"
                 ]
               }
             },
@@ -810,6 +896,286 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"owners only\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Address search: 1 character → 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/geocode/search?q=a",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "geocode",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Address search: 81 characters → 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/geocode/search?q=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "geocode",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Address search without a token → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/geocode/search?q=plaza",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "geocode",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "plaza"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reverse lookup outside Pasto (Bogotá) → 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/geocode/reverse?lat=4.6&lng=-74.08",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "geocode",
+                "reverse"
+              ],
+              "query": [
+                {
+                  "key": "lat",
+                  "value": "4.6"
+                },
+                {
+                  "key": "lng",
+                  "value": "-74.08"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reverse lookup with impossible coordinates → 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/geocode/reverse?lat=95&lng=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "geocode",
+                "reverse"
+              ],
+              "query": [
+                {
+                  "key": "lat",
+                  "value": "95"
+                },
+                {
+                  "key": "lng",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pickup label of 121 characters → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dogId\": \"{{dogId}}\",\n  \"windowStart\": \"{{windowStart}}\",\n  \"durationMinutes\": 45,\n  \"priceCop\": 15000,\n  \"pickupLat\": 1.2136,\n  \"pickupLng\": -77.2811,\n  \"pickupLabel\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pickup label that is not a string → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dogId\": \"{{dogId}}\",\n  \"windowStart\": \"{{windowStart}}\",\n  \"durationMinutes\": 45,\n  \"priceCop\": 15000,\n  \"pickupLat\": 1.2136,\n  \"pickupLng\": -77.2811,\n  \"pickupLabel\": 123\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
                 ]
               }
             }

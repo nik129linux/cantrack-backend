@@ -168,6 +168,7 @@ class OpenRequestCardView(BaseModel):
     priceCop: int
     pickupLat: float
     pickupLng: float
+    pickupLabel: str | None = None
     deadlineAt: str
     paymentMethod: str | None = None
     dogName: str | None = None
@@ -223,6 +224,7 @@ def _open_view(row: dict[str, Any]) -> dict[str, Any]:
         "priceCop": row["price_cop"],
         "pickupLat": row["pickup_lat"],
         "pickupLng": row["pickup_lng"],
+        "pickupLabel": row.get("pickup_label"),
         "deadlineAt": row["deadline_at"],
         "paymentMethod": row.get("payment_method"),
     }
@@ -377,30 +379,28 @@ def create_bidding_request(
             status_code=status.HTTP_400_BAD_REQUEST, detail=WINDOW_TIME_MESSAGE
         ) from None
 
-    rows = run_query(
-        supabase.table(REQUESTS_TABLE).insert(
-            {
-                "owner_id": user.id,
-                "walker_id": None,
-                "dog_id": body.dogId,
-                "status": "open",
-                "requested_time": body.windowStart,
-                "window_end": window_end.isoformat(),
-                "deadline_at": (
-                    now + timedelta(minutes=DEFAULT_CONFIG.auto_pick_after_min)
-                ).isoformat(),
-                "duration_hours": duration_hours,
-                "pickup_lat": body.pickupLat,
-                "pickup_lng": body.pickupLng,
-                "price_cop": body.priceCop,
-                **(
-                    {"payment_method": body.paymentMethod}
-                    if body.paymentMethod is not None
-                    else {}
-                ),
-            }
-        )
-    )
+    values: dict[str, Any] = {
+        "owner_id": user.id,
+        "walker_id": None,
+        "dog_id": body.dogId,
+        "status": "open",
+        "requested_time": body.windowStart,
+        "window_end": window_end.isoformat(),
+        "deadline_at": (
+            now + timedelta(minutes=DEFAULT_CONFIG.auto_pick_after_min)
+        ).isoformat(),
+        "duration_hours": duration_hours,
+        "pickup_lat": body.pickupLat,
+        "pickup_lng": body.pickupLng,
+        "price_cop": body.priceCop,
+    }
+    if body.pickupLabel is not None:
+        # Sent only when there is one, so a request without a label keeps working
+        # even before migration 006 has been applied to the database.
+        values["pickup_label"] = body.pickupLabel
+    if body.paymentMethod is not None:
+        values["payment_method"] = body.paymentMethod
+    rows = run_query(supabase.table(REQUESTS_TABLE).insert(values))
     created = first_row(rows, NOT_FOUND_MESSAGE)
     return _open_view(created)
 
@@ -1519,10 +1519,19 @@ def raise_fare(
         )
         .eq("id", request_id)
         .eq("status", "open")
+        # Compare-and-set: a concurrent raise may have landed after our read,
+        # so the fare is only written while the stored one is still lower.
+        .lt("price_cop", body.priceCop)
     )
     if not rows:
+        current = _owned_request(supabase, request_id, user.id)
+        if current["status"] != "open":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=WALK_NO_LONGER_OPEN_MESSAGE,
+            )
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=WALK_NO_LONGER_OPEN_MESSAGE
+            status_code=status.HTTP_400_BAD_REQUEST, detail=RAISE_HIGHER_MESSAGE
         )
     return _open_view(rows[0])
 

@@ -296,6 +296,7 @@ def create_app() -> FastAPI:
         dogs,
         explore,
         explore_ai,
+        geocode,
         home,
         plans,
         profile,
@@ -323,7 +324,7 @@ def create_app() -> FastAPI:
     application.include_router(checkouts.router)
     # Owner tabs (PR1-PR4). Each module owns its endpoints; registered here once
     # so the tab PRs never touch this file.
-    for owner_tab in (home, explore, explore_ai, walks, profile, profile_data):
+    for owner_tab in (home, explore, explore_ai, geocode, walks, profile, profile_data):
         application.include_router(owner_tab.router)
     # Walker tabs (W1-W5), same rule: the tab PRs never touch this file.
     for walker_tab in (walker_home, walker_offers, walker_clients, walker_route, walker_profile, walker_data):

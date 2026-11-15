@@ -51,3 +51,33 @@ npx newman run cantrack-security.postman_collection.json -e local.security.env.j
 ```
 
 Against the deployed API set `isProduction=true` (Swagger must then be a 404).
+
+## Walker/owner endpoints collection (walker glass)
+
+`cantrack-walker-glass.postman_collection.json` covers the eight new walker/owner
+endpoints: `POST /bidding/requests/{id}/raise`, `PUT /owners/{ownerId}/favorites/{walkerId}`,
+`GET /owners/{ownerId}/walks/summary`, `GET`/`PUT /walkers/{walkerId}/availability`,
+`PUT /walkers/{walkerId}/clients/{ownerId}/dogs/{dogId}/note`, `PUT /walkers/{walkerId}/goal`
+and `GET /walkers/{walkerId}/walking-route`. Run top to bottom in three folders:
+
+- **Happy path** — reads the walker's availability, earnings and client-detail baselines,
+  then builds the data the rest needs: the walker goes online, the owner posts two open
+  requests (one is raised 20000 → 22000, the other is accepted by the walker and picked,
+  which is what makes the walker a client and a favourite candidate), then favourites,
+  dog note, weekly goal and walking route are exercised for real.
+- **Exploits** — one no-token 401, one wrong-account 403/404 and one bad-body 400 per
+  endpoint (where the API defines one); every name carries the expected 4xx and the
+  description says which rule is behind it. `PUT /owners/{ownerId}/favorites/{walkerId}`
+  has no happy path for a stranger, so its exploit asserts the documented 404.
+- **Cleanup** — unfavourites the walker, puts the note back to its captured baseline,
+  cancels both walk requests, and restores availability and the weekly goal to the
+  state captured at the start (the API cannot unset a goal, so a walker who had none
+  keeps the 10000 minimum).
+
+Environment: `baseUrl`, `ownerToken`, `ownerId`, `otherOwnerToken`, `otherOwnerId`,
+`walkerToken`, `walkerId`, `dogId` (a dog owned by the owner) — kept in the untracked
+`local.env.json` exactly like the other collections.
+
+```
+npx newman run cantrack-walker-glass.postman_collection.json -e local.env.json
+```

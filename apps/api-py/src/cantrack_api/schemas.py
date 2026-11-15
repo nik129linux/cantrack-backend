@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool, field_validator, model_validator
 
 UserRole = Literal["walker", "owner"]
 
@@ -387,6 +387,16 @@ class CreateBiddingRequestBody(BaseModel):
     pickupLng: float = Field(ge=-180, le=180, allow_inf_nan=False)
     #: How the owner will pay; shown to walkers on the request card.
     paymentMethod: Literal["cash", "nequi", "card"] | None = None
+    #: The address text the owner picked (the pin stays the source of truth).
+    pickupLabel: str | None = Field(default=None, max_length=120)
+
+    @field_validator("pickupLabel")
+    @classmethod
+    def _blank_label_is_none(cls, value: str | None) -> str | None:
+        """Trim the label; a blank one is no label. O(len)."""
+        if value is None:
+            return None
+        return value.strip() or None
 
     @model_validator(mode="after")
     def _exactly_one_duration(self) -> "CreateBiddingRequestBody":
