@@ -26,7 +26,7 @@ from ..db import run_query
 from ..deps import get_now, get_supabase
 from ..walker_access import walker_from_path
 from .clients import profile_to_api
-from .profile import _signed_avatar
+from .profile import _signed_avatar, avatar_urls
 
 router = APIRouter()
 
@@ -56,7 +56,7 @@ PROFILE_COLUMNS = (
     "owner_id,display_name,phone,avatar_path,pickup_notes,handoff_method,"
     "emergency_name,emergency_relation,emergency_phone,vet_name,vet_phone"
 )
-LIST_PROFILE_COLUMNS = "owner_id,display_name"
+LIST_PROFILE_COLUMNS = "owner_id,display_name,avatar_path"
 OFFER_COLUMNS = "walk_request_id,price_cop"
 RATING_COLUMNS = "walk_request_id,rating"
 NOTE_COLUMNS = "dog_id,note"
@@ -74,6 +74,8 @@ class ClientListItem(BaseModel):
 
     ownerId: str
     ownerName: str | None
+    #: The owner's photo (one-hour signed URL), or None to show the initial.
+    ownerAvatarUrl: str | None = None
     dogs: list[ClientDog]
     walksDone: int
     upcoming: int
@@ -450,6 +452,7 @@ def list_clients(
         summaries[owner_id] = summary
         all_dog_ids |= summary[0]
     dogs = _load_dogs(supabase, all_dog_ids, with_profile=False)
+    photos = avatar_urls(supabase, (profile.get("avatar_path") for profile in profiles.values()))
 
     items: list[ClientListItem] = []
     for owner_id, (dog_ids, walks_done, upcoming, last_walk_at, next_walk_at, gross) in summaries.items():
@@ -465,6 +468,7 @@ def list_clients(
             ClientListItem(
                 ownerId=owner_id,
                 ownerName=profile.get("display_name"),
+                ownerAvatarUrl=photos.get(profile.get("avatar_path") or ""),
                 dogs=client_dogs,
                 walksDone=walks_done,
                 upcoming=upcoming,
