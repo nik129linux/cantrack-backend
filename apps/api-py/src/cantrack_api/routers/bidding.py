@@ -170,6 +170,7 @@ class OpenRequestCardView(BaseModel):
     pickupLng: float
     pickupLabel: str | None = None
     deadlineAt: str
+    paymentMethod: str | None = None
     dogName: str | None = None
     ownerName: str | None = None
     fareCop: int
@@ -225,6 +226,7 @@ def _open_view(row: dict[str, Any]) -> dict[str, Any]:
         "pickupLng": row["pickup_lng"],
         "pickupLabel": row.get("pickup_label"),
         "deadlineAt": row["deadline_at"],
+        "paymentMethod": row.get("payment_method"),
     }
 
 
@@ -396,6 +398,8 @@ def create_bidding_request(
         # Sent only when there is one, so a request without a label keeps working
         # even before migration 006 has been applied to the database.
         values["pickup_label"] = body.pickupLabel
+    if body.paymentMethod is not None:
+        values["payment_method"] = body.paymentMethod
     rows = run_query(supabase.table(REQUESTS_TABLE).insert(values))
     created = first_row(rows, NOT_FOUND_MESSAGE)
     return _open_view(created)

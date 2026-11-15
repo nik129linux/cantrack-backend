@@ -385,6 +385,8 @@ class CreateBiddingRequestBody(BaseModel):
     priceCop: int = Field(ge=0, le=1_000_000)
     pickupLat: float = Field(ge=-90, le=90, allow_inf_nan=False)
     pickupLng: float = Field(ge=-180, le=180, allow_inf_nan=False)
+    #: How the owner will pay; shown to walkers on the request card.
+    paymentMethod: Literal["cash", "nequi", "card"] | None = None
     #: The address text the owner picked (the pin stays the source of truth).
     pickupLabel: str | None = Field(default=None, max_length=120)
 

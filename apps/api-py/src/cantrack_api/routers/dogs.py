@@ -6,10 +6,13 @@ somebody else is indistinguishable from one that does not exist: both are a
 404.
 """
 
+import io
+import logging
 import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from PIL import Image, ImageOps
 from supabase import Client
 from supabase_auth.types import User
 
@@ -24,8 +27,15 @@ from ..uploads import (
     mean_embedding,
     read_image,
 )
+from .profile import AVATAR_BUCKET, avatar_urls
 
 router = APIRouter(prefix="/dogs")
+logger = logging.getLogger(__name__)
+
+#: Reference photos live in the private avatars bucket, under the owner's folder.
+PHOTOS_BUCKET = AVATAR_BUCKET
+#: Longest side kept for a stored reference photo.
+PHOTO_SIDE = 1024
 
 DOGS_TABLE = "dogs"
 NOT_FOUND_MESSAGE = "Dog not found."
@@ -89,6 +99,67 @@ def create_dog(
     row = {**body.model_dump(exclude_unset=True), "owner_id": user.id}
     rows = run_query(supabase.table(DOGS_TABLE).insert(row))
     return first_row(rows, NOT_FOUND_MESSAGE)
+
+
+def _photo_paths(owner_id: str, dog_id: str) -> list[str]:
+    """Every slot a dog's reference photos can occupy, in upload order."""
+    return [f"{owner_id}/dogs/{dog_id}/{index}.webp" for index in range(MAX_REFERENCE_PHOTOS)]
+
+
+def _as_webp(data: bytes) -> bytes:
+    """Shrink a photo to at most PHOTO_SIDE px and re-encode it as WebP.
+
+    Re-encoding also drops whatever metadata (GPS included) the original carried.
+    """
+    with Image.open(io.BytesIO(data)) as image:
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        image.thumbnail((PHOTO_SIDE, PHOTO_SIDE))
+        out = io.BytesIO()
+        image.save(out, "WEBP", quality=82)
+        return out.getvalue()
+
+
+def _store_reference_photos(
+    supabase: Client, owner_id: str, dog_id: str, photos: list[bytes]
+) -> None:
+    """Keep the enrolled photos so the owner can see (and later replace) them.
+
+    Best effort: the embedding is what recognition needs, so a storage hiccup is
+    logged and never fails the enrolment.
+    """
+    bucket = supabase.storage.from_(PHOTOS_BUCKET)
+    paths = _photo_paths(owner_id, dog_id)
+    try:
+        bucket.remove(paths)
+    except Exception:  # noqa: BLE001 - nothing stored yet is fine
+        pass
+    for path, data in zip(paths, photos):
+        try:
+            bucket.upload(path, _as_webp(data), {"content-type": "image/webp"})
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.exception("dog photos: storing %s failed", path)
+
+
+@router.get("/{dog_id}/photos")
+def list_dog_photos(
+    dog_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+) -> dict[str, list[str]]:
+    """The reference photos of one of the caller's dogs, as 1-hour signed URLs.
+
+    Raises:
+        HTTPException: 404 if the dog does not exist or is not the caller's.
+    """
+    first_row(
+        run_query(
+            supabase.table(DOGS_TABLE).select("id").eq("id", str(dog_id)).eq("owner_id", user.id)
+        ),
+        NOT_FOUND_MESSAGE,
+    )
+    paths = _photo_paths(user.id, str(dog_id))
+    signed = avatar_urls(supabase, paths)
+    return {"photos": [signed[path] for path in paths if path in signed]}
 
 
 @router.post("/{dog_id}/photos")
@@ -156,6 +227,7 @@ def enroll_dog_photo(
         .eq("owner_id", user.id)
     )
     updated = first_row(rows, NOT_FOUND_MESSAGE)
+    _store_reference_photos(supabase, user.id, str(dog_id), photos)
 
     # The embedding is 512 floats the client never needs back; answering without
     # it keeps the response a readable dog instead of a wall of numbers.
@@ -225,6 +297,10 @@ def delete_dog(
         supabase.table(DOGS_TABLE).delete().eq("id", str(dog_id)).eq("owner_id", user.id)
     )
     first_row(rows, NOT_FOUND_MESSAGE)
+    try:
+        supabase.storage.from_(PHOTOS_BUCKET).remove(_photo_paths(user.id, str(dog_id)))
+    except Exception:  # noqa: BLE001 - the dog is gone; leftover files are harmless
+        logger.exception("dog photos: cleanup for %s failed", dog_id)
     return {"message": DELETED_MESSAGE}
 
 
