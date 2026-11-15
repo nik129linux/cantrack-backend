@@ -34,16 +34,37 @@ form (dog, duration, start, fare, pickup)  ──POST /bidding/requests──▶
 - When it is 0, show "Ahora no hay paseadores cerca; tu solicitud igual quedará publicada".
 - The answer is only a count, so never draw walkers on the map from it.
 
+**Pickup field (inDrive style):** one text box that finds the address while the owner types, a map
+icon beside it that opens a full-screen map with a fixed pin, and `Mi ubicación`, the saved home and
+recent pickups before typing. The app sends both the pin and the text it picked.
+
+`GET /geocode/search?q=plaza de nariño` (2 to 80 characters, 60 a minute) and
+`GET /geocode/reverse?lat=&lng=` (the point must be inside Pasto, else 400):
+
+```json
+{"status": "ok", "results": [{"label": "Plaza de Nariño", "detail": "Comuna 1, Pasto", "lat": 1.2146, "lng": -77.2783}]}
+```
+
+- Search after 3 characters and 300 ms without typing; drop an answer for text that is no longer in the box.
+- `status: "unavailable"` (HTTP 200, empty `results`) means the geocoder is down: offer the map instead.
+- Results are limited to Pasto, at most 6, and cached on the server. Photon does not understand Colombian
+  house numbers well (`Calle 18 22-10` may not match), so the map must always be one tap away.
+- The full-screen map asks `reverse` once the map has been still for 400 ms and shows the address under the pin.
+
 **Create:** `POST /bidding/requests`
 
 ```json
 {"dogId": "…", "windowStart": "2026-10-26T22:00:00+00:00", "durationMinutes": 45,
- "priceCop": 15000, "pickupLat": 1.2136, "pickupLng": -77.2811}
+ "priceCop": 15000, "pickupLat": 1.2136, "pickupLng": -77.2811, "pickupLabel": "Plaza de Nariño"}
 ```
+
+- **`pickupLabel`** is optional: the address text the owner picked, at most 120 characters, trimmed (blank
+  becomes `null`). The pin stays the source of truth; the walker sees the label on the request card, the
+  route stop and the navigation panel as `pickupLabel` (`null` for requests made without one).
 
 - **`windowStart`** must have a timezone offset, be in the future and fall within the next 30 days.
 - **Limit:** 10 requests a minute.
-- **Response 201:** `{id, status: "open", dogId, requestedTime, windowEnd, durationHours, priceCop, pickupLat, pickupLng, deadlineAt}`.
+- **Response 201:** `{id, status: "open", dogId, requestedTime, windowEnd, durationHours, priceCop, pickupLat, pickupLng, pickupLabel, deadlineAt}`.
 
 ## 2. Optional assistant: "Escríbelo y lo lleno yo"
 
