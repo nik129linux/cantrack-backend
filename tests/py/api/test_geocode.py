@@ -13,9 +13,10 @@ from cantrack_api.geocode import get_geocoder
 from .conftest import bearer
 
 
-def feature(name=None, street=None, number=None, district=None, city="Pasto", lat=1.2136, lng=-77.2811):
+def feature(name=None, street=None, number=None, district=None, locality=None, city="Pasto", lat=1.2136, lng=-77.2811):
     """A Photon GeoJSON feature, only with the properties the test sets."""
-    props = {"name": name, "street": street, "housenumber": number, "district": district, "city": city}
+    props = {"name": name, "street": street, "housenumber": number, "district": district,
+             "locality": locality, "city": city}
     return {
         "geometry": {"type": "Point", "coordinates": [lng, lat]},
         "properties": {key: value for key, value in props.items() if value is not None},
@@ -86,6 +87,29 @@ class TestSearch:
     def test_detail_is_just_the_city_without_a_district(self, fake_client, source):
         source.features = [feature(name="Parque Infantil")]
         assert search(fake_client).json()["results"][0]["detail"] == "Pasto"
+
+    def test_the_barrio_leads_the_detail_and_the_city_is_left_out_when_there_is_a_barrio(self, fake_client, source):
+        source.features = [feature(name="Escuela", locality="San Andresito", district="Comuna 1")]
+        assert search(fake_client).json()["results"][0]["detail"] == "San Andresito, Comuna 1"
+
+    def test_the_same_place_mapped_twice_is_listed_once(self, fake_client, source):
+        # Real Photon returns "Plaza de Nariño" as several OSM objects a metre apart, even with
+        # different barrio tags.
+        source.features = [
+            feature(name="Plaza de Nariño", district="Comuna 1", lat=1.2146113, lng=-77.2782881),
+            feature(name="Plaza de Nariño", district="Comuna 1", lat=1.2146073, lng=-77.2782916),
+            feature(name="Plaza de Nariño", district="Comuna 1", locality="Marcos de la Rosa", lat=1.2146, lng=-77.2783),
+        ]
+        results = search(fake_client).json()["results"]
+        assert [(r["label"], r["detail"]) for r in results] == [("Plaza de Nariño", "Comuna 1, Pasto")]
+
+    def test_the_same_name_far_apart_is_two_places(self, fake_client, source):
+        # "Carrera 27" runs through several comunas: each one is a different pickup.
+        source.features = [
+            feature(street="Carrera 27", district="Comuna 7", lat=1.2071, lng=-77.2924),
+            feature(street="Carrera 27", district="Comuna 10", lat=1.2323, lng=-77.2674),
+        ]
+        assert [r["detail"] for r in search(fake_client).json()["results"]] == ["Comuna 7, Pasto", "Comuna 10, Pasto"]
 
     def test_results_outside_pasto_are_dropped(self, fake_client, source):
         source.features = [feature(name="Bogota Plaza", lat=4.6, lng=-74.08), feature(name="Plaza de Nariño")]
@@ -178,6 +202,15 @@ class TestReverse:
         assert body["results"][0]["label"] == "Calle 18 22-10"
         assert source.reverse_calls == [(1.2136, -77.2811)]
 
+    def test_the_street_wins_over_the_name_of_the_nearest_object(self, fake_client, source):
+        # Real Photon answered the Pasto centre with an all-caps school; the pin wants the address.
+        source.features = [feature(name="ESCUELA N. 4 DE NIÑAS", street="Calle 15", locality="San Andresito")]
+        assert reverse(fake_client).json()["results"][0]["label"] == "Calle 15"
+
+    def test_without_a_street_the_name_is_the_label(self, fake_client, source):
+        source.features = [feature(name="Parque Infantil")]
+        assert reverse(fake_client).json()["results"][0]["label"] == "Parque Infantil"
+
     def test_nearby_points_share_a_cache_cell(self, fake_client, source):
         reverse(fake_client, lat=1.21361, lng=-77.28111)
         reverse(fake_client, lat=1.21362, lng=-77.28112)
@@ -217,6 +250,8 @@ class TestPhotonClient:
         assert seen["params"]["bbox"] == "-77.36,1.12,-77.2,1.3"
         assert seen["params"]["limit"] == 10
         assert seen["headers"]["User-Agent"] == "CanTrack/0.1"
+        # Photon answers 400 to a language it does not support (es), so none is sent.
+        assert "lang" not in seen["params"]
         assert seen["timeout"] <= 5.0
 
     def test_reverse_asks_photon_for_the_point(self, monkeypatch):
@@ -237,3 +272,4 @@ class TestPhotonClient:
         assert geocode.PhotonClient().reverse(1.2136, -77.2811) == []
         assert seen["url"] == "https://photon.komoot.io/reverse"
         assert seen["params"]["lat"] == 1.2136 and seen["params"]["lon"] == -77.2811
+        assert "lang" not in seen["params"]

@@ -90,7 +90,7 @@ def reverse_address(
     if cached is not None:
         return {"status": "ok", "results": cached}
     try:
-        results = format_features(geocoder.reverse(lat, lng))
+        results = format_features(geocoder.reverse(lat, lng), address_first=True)
     except Exception:  # noqa: BLE001 - any upstream failure degrades to the map
         logger.warning("geocode reverse failed", exc_info=True)
         return dict(UNAVAILABLE)

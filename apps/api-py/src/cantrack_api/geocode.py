@@ -10,6 +10,8 @@ from .navigation import PASTO_BOUNDS, inside_pasto
 SEARCH_URL = "https://photon.komoot.io/api/"
 REVERSE_URL = "https://photon.komoot.io/reverse"
 
+#: No ``lang`` parameter on purpose: Photon only supports default/de/en/fr and answers 400 to
+#: ``lang=es``. The default language is the local one (Spanish names for Pasto).
 #: A generic client name: the user's details never go to a third party.
 USER_AGENT = "CanTrack/0.1"
 TIMEOUT_SECONDS = 5.0
@@ -75,7 +77,6 @@ class PhotonClient:
                 "lat": BIAS_LAT,
                 "lon": BIAS_LNG,
                 "limit": UPSTREAM_LIMIT,
-                "lang": "es",
             },
             headers={"User-Agent": USER_AGENT},
             timeout=TIMEOUT_SECONDS,
@@ -92,7 +93,7 @@ class PhotonClient:
         """
         response = httpx.get(
             REVERSE_URL,
-            params={"lat": lat, "lon": lng, "limit": 1, "lang": "es"},
+            params={"lat": lat, "lon": lng, "limit": 1},
             headers={"User-Agent": USER_AGENT},
             timeout=TIMEOUT_SECONDS,
         )
@@ -105,34 +106,67 @@ def get_geocoder() -> PhotonClient:
     return PhotonClient()
 
 
-def _label(props: dict[str, Any]) -> str | None:
-    """The bold line of a result: the place name, else ``street number``. O(1)."""
-    name = props.get("name")
-    if isinstance(name, str) and name.strip():
-        return name.strip()
-    street = props.get("street")
-    if isinstance(street, str) and street.strip():
-        number = props.get("housenumber")
-        if isinstance(number, str) and number.strip():
-            return f"{street.strip()} {number.strip()}"
-        return street.strip()
+def _text(props: dict[str, Any], key: str) -> str | None:
+    """A non-blank string property, trimmed. O(1)."""
+    value = props.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return None
 
 
+def _street_label(props: dict[str, Any]) -> str | None:
+    """``street number``, or just the street. O(1)."""
+    street = _text(props, "street")
+    if street is None:
+        return None
+    number = _text(props, "housenumber")
+    return f"{street} {number}" if number is not None else street
+
+
+def _label(props: dict[str, Any], address_first: bool) -> str | None:
+    """The bold line of a result. O(1).
+
+    A search is for a place, so the name wins (``Unicentro``). A reverse lookup is for a point, and
+    the nearest object is often an all-caps school or a shop: the street is the better address.
+    """
+    name = _text(props, "name")
+    street = _street_label(props)
+    first, second = (street, name) if address_first else (name, street)
+    return first if first is not None else second
+
+
 def _detail(props: dict[str, Any]) -> str:
-    """The muted line of a result: ``district, city``. O(1)."""
-    parts = []
-    for key in ("district", "locality", "city"):
+    """The muted line of a result: the barrio first, then the comuna (or the city). O(1)."""
+    parts: list[str] = []
+    for key in ("locality", "district", "city"):
         value = props.get(key)
         if isinstance(value, str) and value.strip() and value.strip() not in parts:
             parts.append(value.strip())
     return ", ".join(parts[:2])
 
 
-def format_features(features: list[Any]) -> list[dict[str, Any]]:
+#: Same name within this many degrees (about 220 m) is the same place mapped twice.
+SAME_PLACE_DEGREES = 0.002
+
+
+def _same_place(label: str, lat: float, lng: float, found: dict[str, Any]) -> bool:
+    """Whether a result is another copy of one already kept. O(1)."""
+    return (
+        found["label"].casefold() == label.casefold()
+        and abs(found["lat"] - lat) <= SAME_PLACE_DEGREES
+        and abs(found["lng"] - lng) <= SAME_PLACE_DEGREES
+    )
+
+
+def format_features(features: list[Any], address_first: bool = False) -> list[dict[str, Any]]:
     """Photon features to ``{label, detail, lat, lng}``, only real places inside Pasto.
 
-    Malformed features are skipped, never fatal. At most ``MAX_RESULTS``. O(n).
+    Malformed features are skipped, never fatal, and a place OpenStreetMap maps several times (the
+    Plaza de Nariño is three objects a metre apart) is listed once (same name within about 200 m). At most ``MAX_RESULTS``. O(n).
+
+    Args:
+        features: The raw Photon features.
+        address_first: Prefer the street over the place name (reverse lookups).
     """
     results: list[dict[str, Any]] = []
     for feature in features:
@@ -142,8 +176,10 @@ def format_features(features: list[Any]) -> list[dict[str, Any]]:
             props = feature.get("properties") or {}
         except (KeyError, TypeError, ValueError, AttributeError):
             continue
-        label = _label(props)
+        label = _label(props, address_first)
         if label is None or not inside_pasto(lat, lng):
+            continue
+        if any(_same_place(label, lat, lng, found) for found in results):
             continue
         results.append({"label": label, "detail": _detail(props), "lat": lat, "lng": lng})
         if len(results) == MAX_RESULTS:
