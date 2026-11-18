@@ -21,7 +21,23 @@ import json
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, status
+from cantrack_ai.embeddings import (
+    ClipEmbedder,
+    cosine_similarity,
+    parse_embedding,
+)
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field
 from supabase import Client
 from supabase_auth.types import User
@@ -44,8 +60,9 @@ from ..bidding_eligibility import (
     project_to_metres,
 )
 from ..db import first_row, run_query
-from ..deps import current_role, get_current_user, get_now, get_supabase, get_text_model
+from ..deps import current_role, get_current_user, get_embedder, get_now, get_supabase, get_text_model
 from ..geo import haversine_km
+from ..uploads import MAX_IMAGE_BYTES
 from ..walker_access import ensure_walker_profile, is_online
 from .profile import avatar_urls
 from ..walk_report import build_and_store_walk_report
@@ -135,6 +152,14 @@ REPLAY_BEFORE_FIRST_MESSAGE = "atEpoch is before the first recorded GPS point."
 
 #: The statuses whose windows keep a walker busy.
 BUSY_STATUSES = ["assigned", "in_walk"]
+
+#: Cosines at or above this are the same dog: a check-in photo scoring this high
+#: against the dog's enrolled embedding is auto-accepted. Calibrated with
+#: cantrack-ai/evals/clip_eval.py on RAW (uncropped) DogFaceNet photos, 3 reference
+#: photos + flip: at 0.88, 2.6% of other dogs pass and 55% of the right dog passes.
+#: (On aligned face crops 0.91 gives the same impostor rate.) Re-run the eval on the
+#: real demo dogs before trusting it; below it the walker confirms by eye.
+DOG_MATCH_SIMILARITY = 0.88
 
 #: Quadtree bounds in metres (the eligibility tests use the same).
 QUADTREE_BOUNDS = (-20_000_000.0, -20_000_000.0, 20_000_000.0, 20_000_000.0)
@@ -1610,33 +1635,90 @@ def mark_no_show(
     )
 
 
+def _check_in_ai(
+    supabase: Client,
+    walk_request: dict[str, Any],
+    image: UploadFile,
+    embedder: ClipEmbedder,
+) -> dict[str, Any]:
+    """Compare a check-in photo with the request's dog. Advice, never a gate. O(1).
+
+    The photo is embedded with the CLIP embedder and scored against the dog's
+    enrolled vector by cosine similarity. Every failure — an unreadable photo, a
+    broken model, a missing dog row — is reported as ``unavailable`` instead of
+    raising: the walk starts whatever the AI says. The photo itself is dropped
+    once embedded; nothing is stored.
+
+    Args:
+        supabase: The Supabase client, read for the dog's embedding.
+        walk_request: The stored request; its ``dog_id`` names the dog to match.
+        image: The ``image`` part of the multipart request.
+        embedder: The CLIP embedder, injected as a dependency.
+
+    Returns:
+        ``{"match": ..., "similarity": ...}`` where ``match`` is ``match``
+        (>= ``DOG_MATCH_SIMILARITY``), ``uncertain`` (below it), ``unknown``
+        (the dog has no enrolled embedding) or ``unavailable`` (any failure).
+        ``similarity`` is rounded to 4 decimals, None for unknown/unavailable.
+    """
+    unavailable = {"match": "unavailable", "similarity": None}
+    try:
+        dog_rows = run_query(
+            supabase.table(DOGS_TABLE)
+            .select("*")
+            .eq("id", walk_request["dog_id"])
+        )
+        stored = parse_embedding(dog_rows[0].get("embedding")) if dog_rows else None
+        if stored is None:
+            return {"match": "unknown", "similarity": None}
+        data = image.file.read(MAX_IMAGE_BYTES + 1)
+        if len(data) > MAX_IMAGE_BYTES:
+            return unavailable  # same 5 MB cap as every other upload; never reaches the model
+        embedding = embedder.embed(data)
+        similarity = cosine_similarity(embedding, stored)
+    except Exception:
+        return unavailable
+    return {
+        "match": "match" if similarity >= DOG_MATCH_SIMILARITY else "uncertain",
+        "similarity": round(similarity, 4),
+    }
+
+
 @router.post("/requests/{request_id}/check-in")
 def check_in_walk(
     request_id: str,
+    image: UploadFile | None = File(default=None),
     user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase),
     now: datetime = Depends(get_now),
+    embedder: ClipEmbedder = Depends(get_embedder),
 ) -> dict[str, Any]:
     """Start the walk (the assigned walker only).
 
     ``CHECK_IN`` moves the walk from ``assigned`` to ``in_walk`` and appends
-    a ``check_in`` row to the walk's timeline; any other state is a 409.
+    a ``check_in`` row to the walk's timeline; any other state is a 409. An
+    optional ``image`` (one photo of the dog at pickup) is embedded and compared
+    with the dog's enrolled vector: the answer gains ``ai: {match,
+    similarity}``. The AI is advice only — the walk always starts, and a model
+    failure or an unreadable photo never raises.
 
     Args:
         request_id: The walk request to check in to.
+        image: The optional photo of the dog at pickup.
         user: The authenticated walker.
         supabase: The Supabase client.
         now: The current time (dependency, frozen in tests).
+        embedder: The CLIP embedder, injected as a dependency.
 
     Returns:
-        ``{id, status: "in_walk", walkerId}``.
+        ``{id, status: "in_walk", walkerId}``, plus ``ai`` when a photo came in.
 
     Raises:
         HTTPException: 403 (not the assigned walker), 409 (illegal transition),
             500 (database).
     """
     walk_request = _assigned_request(supabase, request_id, user.id)
-    return _apply_transition(
+    resolved = _apply_transition(
         supabase,
         request_id,
         walk_request,
@@ -1645,6 +1727,9 @@ def check_in_walk(
         "check_in",
         now,
     )
+    if image is not None:
+        resolved["ai"] = _check_in_ai(supabase, walk_request, image, embedder)
+    return resolved
 
 
 @router.post("/requests/{request_id}/check-out", response_model=CheckOutResponse)
