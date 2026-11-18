@@ -16,9 +16,8 @@ from supabase_auth.errors import AuthError
 from supabase_auth.types import User
 
 from cantrack_ai.embeddings import ClipEmbedder
-from cantrack_ai.vision import OllamaVision
 
-from .ai_text import OllamaText
+from .ai_chain import ChainText, ChainVision
 
 BEARER = "bearer"
 
@@ -67,31 +66,31 @@ def get_embedder() -> ClipEmbedder:
 
 
 @lru_cache(maxsize=1)
-def get_vision() -> OllamaVision:
-    """Return the process-wide Ollama vision client, building it on first use.
+def get_vision() -> ChainVision:
+    """Return the process-wide vision chain, building it on first use.
 
     Configuration is read lazily for the same reason as the embedder, and the
-    client is disabled (it makes no requests) when ``OLLAMA_API_KEY`` is unset.
+    chain is disabled (it makes no requests) when no provider key is set.
     Tests substitute their own double through
     ``app.dependency_overrides[get_vision]``.
 
     Returns:
-        An ``OllamaVision`` configured from the environment.
+        A ``ChainVision`` configured from the environment.
     """
-    return OllamaVision.from_env()
+    return ChainVision.from_env()
 
 
 @lru_cache(maxsize=1)
-def get_text_model() -> OllamaText:
-    """Return the process-wide text model client, built on first use.
+def get_text_model() -> ChainText:
+    """Return the process-wide text chain, built on first use.
 
-    Disabled (never calls out) when ``OLLAMA_API_KEY`` is unset. Tests swap it
+    Disabled (never calls out) when no provider key is set. Tests swap it
     through ``app.dependency_overrides[get_text_model]``.
 
     Returns:
-        An ``OllamaText`` configured from the environment.
+        A ``ChainText`` configured from the environment.
     """
-    return OllamaText.from_env()
+    return ChainText.from_env()
 
 
 def get_now() -> datetime:

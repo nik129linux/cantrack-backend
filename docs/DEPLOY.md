@@ -43,11 +43,12 @@ Never commit real secret values to git.
 | `ENV=production` | Production mode: hides `/docs`, `/redoc`, `/openapi.json` | Literal value `production` |
 | `CLIENT_IP_HEADER=X-Real-IP` | Trust Railway's edge-overwritten `X-Real-IP` header for anonymous rate-limit IPs | Literal value `X-Real-IP` |
 | `TRUSTED_PROXY_IPS` | Leave `127.0.0.1`: forwarded headers are read via CLIENT_IP_HEADER, not uvicorn | Literal value `127.0.0.1` |
-| `OLLAMA_API_KEY` | Key for Ollama Cloud vision/text calls (AI features stay disabled when unset) | Ollama Cloud dashboard > API keys |
-| `OLLAMA_HOST` | Ollama base URL | `https://ollama.com` unless self-hosting |
-| `OLLAMA_VISION_MODEL` | Model for photo checks (route intake, checkout evidence) | Ollama model name, e.g. `gemma4:31b` |
-| `OLLAMA_TEXT_MODEL` | Model for text generation (explore AI, walk reports) | Ollama model name, e.g. `gemma4:31b` |
+| `AI_CHAIN` | Providers the AI features try, in priority order (default `gemini,groq`); unknown names and providers without a key are skipped | Comma-separated provider names, e.g. `groq,gemini` |
+| `GEMINI_API_KEY` | Key for the Gemini provider (text + photo checks) | Google AI Studio > API keys |
+| `GROQ_API_KEY` | Key for the Groq provider (text + photo checks) | Groq Cloud console > API keys |
 | `AI_WALK_REPORT` | Set to `off` to disable AI walk reports, leave unset to enable | Literal value `off` or unset |
+
+Each provider also accepts optional overrides: `<NAME>_TEXT_MODEL`, `<NAME>_VISION_MODEL` and `<NAME>_BASE_URL` (for example `GROQ_TEXT_MODEL`), defaulting to the documented model and endpoint. Ollama is no longer used: the old `OLLAMA_API_KEY`, `OLLAMA_HOST`, `OLLAMA_TEXT_MODEL` and `OLLAMA_VISION_MODEL` variables are ignored and can be deleted.
 
 Example (placeholders only, never real secrets):
 
@@ -58,10 +59,9 @@ railway variables set SUPABASE_URL=https://xyzcompany.supabase.co
 railway variables set SUPABASE_SERVICE_ROLE_KEY=paste-from-supabase-dashboard
 railway variables set CLIENT_IP_HEADER=X-Real-IP
 railway variables set TRUSTED_PROXY_IPS=127.0.0.1
-railway variables set OLLAMA_HOST=https://ollama.com
-railway variables set OLLAMA_API_KEY=paste-from-ollama-dashboard
-railway variables set OLLAMA_VISION_MODEL=gemma4:31b
-railway variables set OLLAMA_TEXT_MODEL=gemma4:31b
+railway variables set AI_CHAIN=gemini,groq
+railway variables set GEMINI_API_KEY=paste-from-google-ai-studio
+railway variables set GROQ_API_KEY=paste-from-groq-console
 ```
 
 ## Deploy

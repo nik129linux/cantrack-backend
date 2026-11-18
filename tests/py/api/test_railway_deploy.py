@@ -75,6 +75,6 @@ class TestRunbook:
         guide = (BACKEND / "docs" / "DEPLOY.md").read_text()
         for needle in ("railway login", "railway up", "/health", "rollback",
                        "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "WEB_ORIGIN", "ENV=production",
-                       "CLIENT_IP_HEADER=X-Real-IP", "TRUSTED_PROXY_IPS", "OLLAMA_API_KEY",
+                       "CLIENT_IP_HEADER=X-Real-IP", "TRUSTED_PROXY_IPS", "AI_CHAIN", "GEMINI_API_KEY", "GROQ_API_KEY",
                        "AI_WALK_REPORT"):
             assert needle in guide, f"DEPLOY.md is missing {needle}"
