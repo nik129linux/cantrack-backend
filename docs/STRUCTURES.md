@@ -130,3 +130,26 @@ One line each, from the code that actually calls them.
 - Cost: add_edge O(1) average, shortest_path O(V^2 + E) with the simple Dijkstra.
 - Why not a list/dict: A dict of edges alone cannot answer "cheapest path"; the adjacency list plus Dijkstra visits reachable legs only and keeps one distance per node.
 - Likely professor question: "Why O(V^2 + E) instead of O((V+E) log V)?" — The unvisited scan picks the next minimum without a heap, which is simpler and fine for the campus-sized graph; a binary heap would add heap operations and tie-breaking complexity for little gain here.
+
+## AI: how we know the dog match works
+
+- What: CLIP ViT-B/32 (quantized ONNX) embeds a dog photo, and cosine similarity compares it with the dog's enrolled mean embedding (`cantrack-ai/evals/clip_eval.py`).
+- Data: DogFaceNet (Zenodo 12578449, CC BY 4.0): 224x224 aligned face crops (300 dogs) and the raw uncropped web photos (80 dogs).
+- Results (3 reference photos + horizontal-flip averaging unless noted):
+
+| Data | Setup | Right dog ranks first among 8 | Threshold | Other-dog photos accepted | Right-dog photos accepted |
+|---|---|---|---|---|---|
+| Face crops | 2 refs | 83.0% | 0.89 | 4.0% | 67.9% |
+| Face crops | 3 refs + flip | 89.4% | 0.91 | 2.6% | 71.0% |
+| Raw photos | 2 refs | 76.3% | 0.86 | 3.2% | 53.1% |
+| Raw photos | 3 refs + flip | 85.4% | 0.88 | 2.6% | 54.9% |
+
+- Decision: check-in threshold `DOG_MATCH_SIMILARITY = 0.88` (`routers/bidding.py`). The AI is advice: the walk always starts; below the threshold the walker confirms by eye. An earlier threshold 0.80 was never evaluated and rejected only 5% of unknown dogs.
+- Honest limits: 85.4% is below the 90% target; one seeded run (small sample: 144 raw queries); DogFaceNet is not the demo dogs; re-run the eval on real demo dog photos before trusting the number.
+- Reproduce: `python -I evals/clip_eval.py DATA_DIR --out RESULT.json --refs 3 --flip` (set `CLIP_MODEL_PATH`).
+
+### Provider check (live, 2026-11-18)
+
+- Text (`gemini-3.5-flash-lite`, `openai/gpt-oss-120b`): 10/10 valid JSON each, median 0.8-0.9 s.
+- Photo check through the chain, one call every 6 s: 10/10 answered, 10/10 correct (3 dog photos, 2 without a dog), median 1.7 s, all served by Gemini.
+- Free-tier limits are real: a burst of 17 Gemini calls hit its quota (429), and Groq's vision model allows about 3 photos a minute (8,000 tokens/minute, ~2,500 per photo). The chain hands over on 429, and a walk never waits on the AI.
