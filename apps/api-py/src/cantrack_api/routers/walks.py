@@ -27,6 +27,15 @@ from ..app import limiter
 from ..bidding import DEFAULT_CONFIG
 from ..db import first_row, run_query
 from ..deps import current_role, get_current_user, get_now, get_supabase
+from ..geo import haversine_km
+from ..navigation import (
+    cache_get,
+    cache_put,
+    get_route_source,
+    inside_pasto,
+    parse_path,
+    path_cache_key,
+)
 from ..owner_access import owner_from_path
 from .profile import avatar_urls
 
@@ -43,6 +52,11 @@ GPS_POINTS_TABLE = "walk_gps_points"
 NOT_FOUND_MESSAGE = "Walk not found."
 GPS_WALKER_ONLY_MESSAGE = "Only the assigned walker can send GPS points."
 NOT_IN_PROGRESS_MESSAGE = "This walk is not in progress."
+NOT_YOUR_WALK_MESSAGE = "Not your walk request."
+NOT_ON_THE_WAY_MESSAGE = "The walker is not on the way."
+POSITIONS_TABLE = "walker_positions"
+#: Walking speed for the straight fallback, in km/h (the same one Rutas uses).
+STRAIGHT_SPEED_KMH = 4.5
 GPS_ONLY_DURING_MESSAGE = "GPS is only accepted during a walk."
 GPS_ORDER_MESSAGE = "GPS points must be in order and within the walk."
 REPEAT_STATE_MESSAGE = "Only a finished walk can be repeated."
@@ -199,6 +213,47 @@ class LiveResponse(BaseModel):
 
     position: LivePosition | None
     minutesElapsed: int
+
+
+class EnRouteResponse(BaseModel):
+    """The walker's "Voy en camino" tap."""
+
+    id: str
+    enRouteAt: str
+
+
+class ApproachPosition(BaseModel):
+    """The walker's last reported position while he heads to the pickup."""
+
+    lat: float
+    lng: float
+    updatedAt: str | None
+
+
+class ApproachPoint(BaseModel):
+    """The pickup the walker is heading to."""
+
+    lat: float
+    lng: float
+
+
+class ApproachRoute(BaseModel):
+    """The street line from the walker to the pickup."""
+
+    source: str
+    distanceKm: float
+    minutes: int
+    #: ``[[lat, lng], ...]`` along the streets.
+    geometry: list[list[float]]
+
+
+class ApproachResponse(BaseModel):
+    """What the owner sees while the walker is on the way."""
+
+    enRouteAt: str
+    position: ApproachPosition | None
+    pickup: ApproachPoint
+    route: ApproachRoute | None
 
 
 class RepeatBody(BaseModel):
@@ -552,6 +607,9 @@ def _allowed_actions(
                 minutes=DEFAULT_CONFIG.no_show_grace_min
             ):
                 actions.append("no_show")
+            # Only after the walker tapped "Voy en camino": until then his position is private.
+            if row.get("en_route_at"):
+                actions.append("approach")
             return actions
         if walk_status == "in_walk":
             return ["track"]
@@ -960,3 +1018,146 @@ def repeat_walk(
         "priceCop": created["price_cop"],
         "durationHours": created["duration_hours"],
     }
+
+
+@router.post("/bidding/requests/{request_id}/en-route", response_model=EnRouteResponse)
+def mark_en_route(
+    request_id: str,
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+    now: datetime = Depends(get_now),
+) -> dict[str, Any]:
+    """Tell the owner the walker is heading to the pickup ("Voy en camino").
+
+    Not a state change: the walk stays ``assigned`` and only ``en_route_at`` is
+    stamped, which is what lets the owner read ``/approach``. Tapping again keeps
+    the first time, so a double tap or a retry is harmless.
+
+    Args:
+        request_id: The walk the walker is heading to.
+        user: The authenticated caller; must be the assigned walker.
+        supabase: The Supabase client.
+        now: The current time (dependency, frozen in tests).
+
+    Returns:
+        ``{id, enRouteAt}``.
+
+    Raises:
+        HTTPException: 403 for anyone but the assigned walker, 409 when the
+            walk is not ``assigned``, 500 on database errors.
+
+    Big-O: O(1).
+    """
+    rows = run_query(
+        supabase.table(REQUESTS_TABLE)
+        .select("*")
+        .eq("id", request_id)
+        .eq("walker_id", user.id)
+    )
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=NOT_YOUR_WALK_MESSAGE
+        )
+    row = rows[0]
+    if row["status"] != "assigned":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only an assigned walk can be marked on the way.",
+        )
+    if row.get("en_route_at"):
+        return {"id": request_id, "enRouteAt": row["en_route_at"]}
+    stamped = now.isoformat()
+    run_query(
+        supabase.table(REQUESTS_TABLE)
+        .update({"en_route_at": stamped})
+        .eq("id", request_id)
+    )
+    return {"id": request_id, "enRouteAt": stamped}
+
+
+@router.get("/bidding/requests/{request_id}/approach", response_model=ApproachResponse)
+def get_approach(
+    request_id: str,
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+    source: Any = Depends(get_route_source),
+    now: datetime = Depends(get_now),
+) -> dict[str, Any]:
+    """Where the walker is and the street route to the pickup, while he is coming.
+
+    Only the walk's two parties (everybody else gets the same 404 as an unknown
+    id), and only between the walker's "Voy en camino" and the check-in: before
+    the tap the walker's position is private, after the check-in ``/live`` takes
+    over. The route is one foot-router call (cached per ~11 m cell); when the
+    router fails the straight line comes back, and with no position yet or one
+    outside Pasto there is no route at all.
+
+    Args:
+        request_id: The walk being approached.
+        user: The authenticated caller.
+        supabase: The Supabase client.
+        source: The routing source (dependency, faked in tests).
+        now: The current time (dependency, frozen in tests).
+
+    Returns:
+        ``{enRouteAt, position, pickup, route}``.
+
+    Raises:
+        HTTPException: 404 for a foreign or unknown walk, 409 when the walker
+            is not on the way, 500 on database errors.
+
+    Big-O: O(1) plus the route's points; O(1) on a cache hit.
+    """
+    row = _load_visible_walk(supabase, request_id, user)
+    if row["status"] != "assigned" or not row.get("en_route_at"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=NOT_ON_THE_WAY_MESSAGE
+        )
+
+    pickup = (row["pickup_lat"], row["pickup_lng"])
+    position_rows = run_query(
+        supabase.table(POSITIONS_TABLE).select("*").eq("walker_id", row["walker_id"])
+    )
+    position = None
+    route = None
+    if position_rows:
+        found = position_rows[0]
+        position = {
+            "lat": found["lat"],
+            "lng": found["lng"],
+            "updatedAt": found.get("updated_at"),
+        }
+        here = (found["lat"], found["lng"])
+        if inside_pasto(*here) and inside_pasto(*pickup):
+            route = _approach_route(source, [here, pickup], now)
+
+    return {
+        "enRouteAt": row["en_route_at"],
+        "position": position,
+        "pickup": {"lat": pickup[0], "lng": pickup[1]},
+        "route": route,
+    }
+
+
+def _approach_route(
+    source: Any, points: list[tuple[float, float]], now: datetime
+) -> dict[str, Any]:
+    """The foot route through ``points``, cached; the straight segments when it fails. O(p)."""
+    key = path_cache_key(points)
+    cached = cache_get(key, now)
+    if cached is not None:
+        return cached
+    try:
+        line = parse_path(source.foot_path(points))
+    except Exception:  # noqa: BLE001 - any upstream trouble falls back to the line
+        line = None
+    if line is None:
+        km = sum(haversine_km(a[0], a[1], b[0], b[1]) for a, b in zip(points, points[1:]))
+        return {
+            "source": "straight",
+            "distanceKm": round(km, 3),
+            "minutes": max(1, int(round(km / STRAIGHT_SPEED_KMH * 60))),
+            "geometry": [[lat, lng] for lat, lng in points],
+        }
+    cache_put(key, line, now)
+    return line

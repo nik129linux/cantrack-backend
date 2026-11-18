@@ -81,3 +81,12 @@ Environment: `baseUrl`, `ownerToken`, `ownerId`, `otherOwnerToken`, `otherOwnerI
 ```
 npx newman run cantrack-walker-glass.postman_collection.json -e local.env.json
 ```
+
+## Walker approach (Voy en camino + street routes)
+
+`cantrack-walker-approach.postman_collection.json` (28 requests) covers `POST /bidding/requests/{id}/en-route`,
+`GET /bidding/requests/{id}/approach` and `GET /walkers/{id}/route/path`: the owner cannot follow the walker
+until he taps (409), the tap is idempotent, only the assigned walker may tap (403), strangers get the same 404,
+and following ends at check-in. It needs `cantrack-db` migration `008_en_route_at.sql` applied, and the variables
+`baseUrl`, `ownerToken`, `otherOwnerToken`, `walkerToken`, `walkerId`, `walker2Token`, `dogId`
+(the same ones `mkenv.py` writes). Run it top to bottom; the happy path creates the walk the exploits probe.

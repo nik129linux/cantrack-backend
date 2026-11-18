@@ -1,0 +1,1111 @@
+{
+  "info": {
+    "name": "CanTrack — Walker approach (Voy en camino + street routes)",
+    "description": "Rutas along the streets and the owner following the walker. Needs migration 008 (walk_requests.en_route_at). Run top to bottom: the happy path creates the walk the exploits then probe. Variables: baseUrl, ownerToken, otherOwnerToken, walkerToken, walkerId, walker2Token, dogId.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Happy path",
+      "item": [
+        {
+          "name": "Owner publishes a walk (Pasto pickup)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dogId\": \"{{dogId}}\",\n  \"windowStart\": \"{{windowStart}}\",\n  \"durationHours\": 1.0,\n  \"priceCop\": 30000,\n  \"pickupLat\": 1.2136,\n  \"pickupLng\": -77.2811\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The API only accepts walks inside the next 30 days: start two days from now at 09:00 Bogota.",
+                  "const start = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);",
+                  "start.setUTCHours(14, 0, 0, 0);",
+                  "pm.environment.set(\"windowStart\", start.toISOString());",
+                  "// The local (Bogota) day of that walk, for the day-path request.",
+                  "pm.environment.set(\"walkDay\", start.toISOString().slice(0, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", function () { pm.response.to.have.status(201); });",
+                  "pm.environment.set(\"walkId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker goes online",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"online\": true,\n  \"lat\": 1.2136,\n  \"lng\": -77.2811\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker offers",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/offers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "offers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"priceCop\": 28000,\n  \"etaMin\": 10.0\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", function () { pm.response.to.have.status(201); });",
+                  "pm.environment.set(\"offerId\", pm.response.json().offerId || pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner picks the offer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/pick",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "pick"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"offerId\": \"{{offerId}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker reports a position 300 m from the house",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walker-position",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walker-position"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lat\": 1.212,\n  \"lng\": -77.283\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner cannot follow the walker before he taps (409)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/approach",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "approach"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409\", function () { pm.response.to.have.status(409); });",
+                  "pm.test(\"says why\", function () { pm.expect(pm.response.json().detail).to.eql(\"The walker is not on the way.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner's actions have no approach yet",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"no approach\", function () { pm.expect(pm.response.json().allowedActions).to.not.include(\"approach\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker taps Voy en camino",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/en-route",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "en-route"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"id\", \"enRouteAt\"); });",
+                  "pm.test(\"same walk\", function () { pm.expect(pm.response.json().id).to.eql(pm.environment.get(\"walkId\")); });",
+                  "pm.environment.set(\"enRouteAt\", pm.response.json().enRouteAt);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Tapping again keeps the first time (idempotent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/en-route",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "en-route"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"same moment\", function () { pm.expect(pm.response.json().enRouteAt).to.eql(pm.environment.get(\"enRouteAt\")); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner's actions now include approach",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"approach\", function () { pm.expect(pm.response.json().allowedActions).to.include(\"approach\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner follows the walker: position and street route",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/approach",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "approach"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"enRouteAt\", \"position\", \"pickup\", \"route\"); });",
+                  "pm.test(\"the tap time\", function () { pm.expect(pm.response.json().enRouteAt).to.eql(pm.environment.get(\"enRouteAt\")); });",
+                  "pm.test(\"walker position\", function () { var p = pm.response.json().position; pm.expect(p.lat).to.eql(1.212); pm.expect(p.lng).to.eql(-77.283); });",
+                  "pm.test(\"pickup is the house\", function () { pm.expect(pm.response.json().pickup).to.eql({ lat: 1.2136, lng: -77.2811 }); });",
+                  "pm.test(\"route follows the streets or falls back to the straight line\", function () { var r = pm.response.json().route; pm.expect(r.source).to.be.oneOf([\"osrm\", \"straight\"]); pm.expect(r.geometry.length).to.be.at.least(2); pm.expect(r.minutes).to.be.at.least(1); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The walker may read it too",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/approach",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "approach"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker's day as one line along the streets",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/route/path?date={{walkDay}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "route",
+                "path"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "{{walkDay}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"shape\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"source\", \"distanceKm\", \"minutes\", \"geometry\"); });",
+                  "pm.test(\"me -> the pickup, at least two points\", function () { var b = pm.response.json(); pm.expect(b.source).to.be.oneOf([\"osrm\", \"straight\"]); pm.expect(b.geometry.length).to.be.at.least(2); b.geometry.forEach(function (pt) { pm.expect(pt).to.have.lengthOf(2); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The stop carries the tap in the day route",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/route?date={{walkDay}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "route"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "{{walkDay}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"enRouteAt on the stop\", function () { var stop = pm.response.json().stops.find(function (s) { return s.requestId === pm.environment.get(\"walkId\"); }); pm.expect(stop.enRouteAt).to.eql(pm.environment.get(\"enRouteAt\")); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Exploits",
+      "item": [
+        {
+          "name": "The owner cannot tap Voy en camino → 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/en-route",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "en-route"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Another walker cannot tap it → 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walker2Token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/en-route",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "en-route"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "IDOR: another owner cannot follow the walker → 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherOwnerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/approach",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "approach"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"same 404 as an unknown walk\", function () { pm.expect(pm.response.json().detail).to.eql(\"Walk not found.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown walk → 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/00000000-0000-0000-0000-000000000000/approach",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "00000000-0000-0000-0000-000000000000",
+                "approach"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404\", function () { pm.response.to.have.status(404); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "No token: en-route → 401",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/en-route",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "en-route"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "No token: approach → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/approach",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "approach"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "IDOR: another walker's day path → 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walker2Token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/route/path",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "route",
+                "path"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Owner token on a walker's day path → 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/route/path",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "route",
+                "path"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Bad date → 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/route/path?date=2026-13-01",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "route",
+                "path"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "2026-13-01"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Date in another format → 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/route/path?date=05/10/2026",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "route",
+                "path"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "05/10/2026"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "No token: day path → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/walkers/{{walkerId}}/route/path",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "walkers",
+                "{{walkerId}}",
+                "route",
+                "path"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Ends with the pickup",
+      "item": [
+        {
+          "name": "Walker starts the walk (check-in)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/check-in",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "check-in"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Following ends with the pickup (409)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ownerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/approach",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "approach"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409\", function () { pm.response.to.have.status(409); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Tapping Voy en camino after check-in → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/en-route",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "en-route"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409\", function () { pm.response.to.have.status(409); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Walker finishes the walk (check-out), so the test leaves nothing in progress",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{walkerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/check-out",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bidding",
+                "requests",
+                "{{walkId}}",
+                "check-out"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
