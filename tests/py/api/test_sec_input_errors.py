@@ -54,10 +54,13 @@ class TestNumbersAreBounded:
         res = fake_client.post("/bidding/requests", json={**BIDDING, "priceCop": price}, headers=bearer("token-a"))
         assert res.status_code == 400
 
-    def test_one_million_cop_is_accepted(self, fake_client, fake):
+    def test_one_million_cop_passes_the_number_bound_but_not_the_price_ceiling(self, fake_client, fake):
+        # 1.000.000 is inside the schema bound (not a 422-style rejection), but it is far above
+        # three times the recommended price of the request's duration, so it is refused as such.
         fake.seed("dogs", id="dog-1", owner_id="owner-a", name="Firulais")
         res = fake_client.post("/bidding/requests", json={**BIDDING, "priceCop": 1_000_000}, headers=bearer("token-a"))
-        assert res.status_code == 201
+        assert res.status_code == 400
+        assert "three times the recommended price" in res.json()["detail"]
 
     @pytest.mark.parametrize("body", [
         {"priceCop": 1_000_001, "etaMin": 10},

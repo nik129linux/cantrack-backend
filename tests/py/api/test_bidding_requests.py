@@ -42,6 +42,29 @@ class TestPostOpenRequest:
         seed_dog(fake)
         assert post_open(fake_client, priceCop=15050).status_code == 400
 
+    # One hour at the default 330 COP/min is recommended at $20.000, so the ceiling is $60.000.
+    def test_fare_at_three_times_the_recommended_price_is_accepted(self, fake_client, fake):
+        seed_dog(fake)
+        assert post_open(fake_client, priceCop=60000).status_code == 201
+
+    def test_fare_above_three_times_the_recommended_price_is_400(self, fake_client, fake):
+        seed_dog(fake)
+        res = post_open(fake_client, priceCop=60100)
+        assert res.status_code == 400
+        assert "three times the recommended price" in res.json()["detail"]
+
+    def test_the_ceiling_follows_the_market_price(self, fake_client, fake):
+        seed_dog(fake)
+        # Five agreed walks nearby at 600 COP/min: recommended $36.000 an hour, ceiling $108.000.
+        for i in range(5):
+            fake.seed("walk_requests", id=f"old-{i}", owner_id="owner-z", walker_id="walker-z",
+                      status="done", pickup_lat=6.2, pickup_lng=-75.5, duration_hours=1.0,
+                      price_cop=36000, created_at="2026-09-20T00:00:00+00:00")
+            fake.seed("walk_offers", id=f"off-{i}", walk_request_id=f"old-{i}", walker_id="walker-z",
+                      price_cop=36000, eta_min=5.0, distance_km=1.0, created_at="2026-09-20T00:00:00+00:00")
+        assert post_open(fake_client, priceCop=108000).status_code == 201
+        assert post_open(fake_client, priceCop=108100).status_code == 400
+
     def test_walker_cannot_post(self, fake_client, fake):
         seed_dog(fake)
         assert post_open(fake_client, token="token-w").status_code == 400
