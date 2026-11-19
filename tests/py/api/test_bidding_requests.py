@@ -34,6 +34,14 @@ class TestPostOpenRequest:
         assert res.json()["status"] == "open"
         assert res.json()["deadlineAt"] == "2026-10-01T00:10:00+00:00"
 
+    def test_fare_in_hundreds_is_accepted(self, fake_client, fake):
+        seed_dog(fake)
+        assert post_open(fake_client, priceCop=15500).status_code == 201
+
+    def test_fare_not_a_multiple_of_100_is_400(self, fake_client, fake):
+        seed_dog(fake)
+        assert post_open(fake_client, priceCop=15050).status_code == 400
+
     def test_walker_cannot_post(self, fake_client, fake):
         seed_dog(fake)
         assert post_open(fake_client, token="token-w").status_code == 400

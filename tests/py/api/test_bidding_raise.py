@@ -26,6 +26,14 @@ def raise_fare(client, price, token="token-a"):
 
 
 class TestRaise:
+    def test_raise_in_hundreds_is_accepted(self, fake_client, fake):
+        seed_open(fake)
+        assert raise_fare(fake_client, 17500).status_code == 200
+
+    def test_raise_not_a_multiple_of_100_is_400(self, fake_client, fake):
+        seed_open(fake)
+        assert raise_fare(fake_client, 20050).status_code == 400
+
     def test_raises_price_and_reopens_window(self, fake_client, fake):
         seed_open(fake)
         res = raise_fare(fake_client, 17000)

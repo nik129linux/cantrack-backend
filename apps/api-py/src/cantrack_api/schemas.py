@@ -363,6 +363,10 @@ class UpdateCheckoutNoteBody(BaseModel):
 # --- Bidding (Plan 2, FR-23..FR-27) -------------------------------------
 
 
+#: Prices are typed on a number pad, so the owner fare and counter offers move in hundreds.
+PRICE_STEP_COP = 100
+
+
 class CreateBiddingRequestBody(BaseModel):
     """Body of ``POST /bidding/requests`` (FR-23).
 
@@ -382,7 +386,7 @@ class CreateBiddingRequestBody(BaseModel):
     windowStart: str
     durationMinutes: Literal[30, 45, 60, 90, 120] | None = None
     durationHours: float | None = Field(default=None, gt=0, le=12)
-    priceCop: int = Field(ge=0, le=1_000_000)
+    priceCop: int = Field(ge=0, le=1_000_000, multiple_of=PRICE_STEP_COP)
     pickupLat: float = Field(ge=-90, le=90, allow_inf_nan=False)
     pickupLng: float = Field(ge=-180, le=180, allow_inf_nan=False)
     #: How the owner will pay; shown to walkers on the request card.

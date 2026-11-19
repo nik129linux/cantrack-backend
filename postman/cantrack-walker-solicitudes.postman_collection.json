@@ -428,7 +428,7 @@
           ]
         },
         {
-          "name": "Counter not a multiple of 1000 → 400",
+          "name": "Counter not a multiple of 100 → 400",
           "request": {
             "method": "POST",
             "header": [
@@ -455,7 +455,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"kind\": \"counter\", \"priceCop\": 22500, \"etaMin\": 8}"
+              "raw": "{\"kind\": \"counter\", \"priceCop\": 22550, \"etaMin\": 8}"
             }
           },
           "event": [
