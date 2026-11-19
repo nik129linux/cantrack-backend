@@ -74,7 +74,13 @@ from ..replay import (
     find_gps_at,
     read_timeline,
 )
-from ..schemas import CreateBiddingRequestBody, PickOfferBody, RatingBody, SendOfferBody
+from ..schemas import (
+    PRICE_STEP_COP,
+    CreateBiddingRequestBody,
+    PickOfferBody,
+    RatingBody,
+    SendOfferBody,
+)
 from ..structures import (
     AvlTree,
     IllegalTransition,
@@ -135,8 +141,8 @@ DEADLINE_NOT_PASSED_MESSAGE = "Deadline has not passed yet."
 OFFER_NOT_FOUND_MESSAGE = "Offer not found."
 OFFLINE_MESSAGE = "Go online to send offers."
 ACCEPT_PRICE_MESSAGE = "An accept takes the owner's fare."
-COUNTER_PRICE_MESSAGE = "Counter price must be a multiple of 1000, at least 8000 and at most twice the fare."
-COUNTER_STEP_COP = 1000
+COUNTER_PRICE_MESSAGE = "Counter price must be a multiple of 100, at least 8000 and at most twice the fare."
+COUNTER_STEP_COP = PRICE_STEP_COP
 MIN_COUNTER_COP = 8000
 COUNTER_FARE_MULTIPLIER = 2
 TRANSITION_MESSAGE = "That transition is not allowed from the current state."
@@ -699,7 +705,7 @@ def send_offer(
     request must be ``open`` and visible to them — within the bidding radius,
     deadline not passed, and either free or busy-eligible. One offer per walker
     per request. ``kind="accept"`` takes the owner's fare; ``kind="counter"``
-    (the default) carries a price that is a multiple of 1000, at least 8000 and
+    (the default) carries a price that is a multiple of 100, at least 8000 and
     at most twice the fare. The kind is derived from the stored price, so an
     offer equal to the fare is always an accept. The distance is the haversine
     from the walker's stored position to the pickup.
@@ -1500,7 +1506,7 @@ def owner_cancel_request(
 class RaiseFareBody(BaseModel):
     """Body of ``POST /bidding/requests/{id}/raise``: the new, higher fare."""
 
-    priceCop: int = Field(ge=0, le=MAX_FARE_COP)
+    priceCop: int = Field(ge=0, le=MAX_FARE_COP, multiple_of=PRICE_STEP_COP)
 
 
 @router.post("/requests/{request_id}/raise")

@@ -152,13 +152,19 @@ class TestAcceptOrCounter:
         place(data)
         assert send(fake_client, {"kind": "counter", "priceCop": FARE, "etaMin": 10}).json()["kind"] == "accept"
 
-    @pytest.mark.parametrize("price", [23500, 7000, 41000])
+    @pytest.mark.parametrize("price", [23550, 7000, 41000])
     def test_counter_bounds(self, fake_client, data, price):
-        # multiple of 1000, at least 8000, at most 2x the fare (40000 here)
+        # multiple of 100, at least 8000, at most 2x the fare (40000 here)
         seed_open(data)
         place(data)
         assert send(fake_client, {"kind": "counter", "priceCop": price, "etaMin": 10}).status_code == 400
         assert not data.tables.get("walk_offers")
+
+    def test_counter_in_hundreds_is_allowed(self, fake_client, data):
+        seed_open(data)
+        place(data)
+        res = send(fake_client, {"kind": "counter", "priceCop": 23500, "etaMin": 10})
+        assert (res.status_code, res.json()["priceCop"]) == (201, 23500)
 
     def test_counter_at_twice_the_fare_is_allowed(self, fake_client, data):
         seed_open(data)
