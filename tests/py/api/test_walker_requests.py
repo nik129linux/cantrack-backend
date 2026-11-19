@@ -147,6 +147,25 @@ class TestAcceptOrCounter:
         assert res.status_code == 201
         assert (res.json()["kind"], res.json()["priceCop"]) == ("counter", 23000)
 
+    def test_card_carries_the_counter_ceiling(self, fake_client, data):
+        # fare $20.000: twice the fare ($40.000) is below three times the recommended $20.000 ($60.000)
+        seed_open(data)
+        place(data)
+        assert open_list(fake_client).json()[0]["maxCounterCop"] == 40000
+        # fare $45.000: three times the recommended price ($60.000) is the lower ceiling
+        data.tables["walk_requests"].clear()
+        seed_open(data, fare=45000)
+        assert open_list(fake_client).json()[0]["maxCounterCop"] == 60000
+
+    def test_counter_cannot_pass_three_times_the_recommended_price(self, fake_client, data):
+        seed_open(data, fare=45000)
+        place(data)
+        res = send(fake_client, {"kind": "counter", "priceCop": 61000, "etaMin": 10})
+        assert res.status_code == 400
+        assert "three times the recommended price" in res.json()["detail"]
+        assert not data.tables.get("walk_offers")
+        assert send(fake_client, {"kind": "counter", "priceCop": 60000, "etaMin": 10}).status_code == 201
+
     def test_a_counter_equal_to_the_fare_is_an_accept(self, fake_client, data):
         seed_open(data)
         place(data)

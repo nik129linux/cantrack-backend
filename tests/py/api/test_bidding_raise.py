@@ -26,6 +26,17 @@ def raise_fare(client, price, token="token-a"):
 
 
 class TestRaise:
+    # 1 h at the default 330 COP/min is recommended at $20.000: the ceiling is $60.000.
+    def test_raise_to_three_times_the_recommended_price_is_accepted(self, fake_client, fake):
+        seed_open(fake)
+        assert raise_fare(fake_client, 60000).status_code == 200
+
+    def test_raise_above_three_times_the_recommended_price_is_400(self, fake_client, fake):
+        seed_open(fake)
+        res = raise_fare(fake_client, 60100)
+        assert res.status_code == 400
+        assert "three times the recommended price" in res.json()["detail"]
+
     def test_raise_in_hundreds_is_accepted(self, fake_client, fake):
         seed_open(fake)
         assert raise_fare(fake_client, 17500).status_code == 200

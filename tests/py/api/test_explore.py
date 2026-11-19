@@ -51,7 +51,7 @@ class TestFareSuggestion:
         res = self.ask(fake_client, minutes)
         assert res.status_code == 200
         assert res.json() == {"suggestedCop": expected, "basis": "default", "sampleSize": 0,
-                              "minCop": 8000, "stepCop": 1000}
+                              "minCop": 8000, "stepCop": 1000, "maxCop": expected * 3}
 
     def _market(self, fake, prices_per_hour, where=PASTO, created_at="2026-09-20T00:00:00+00:00"):
         seed_dog(fake)

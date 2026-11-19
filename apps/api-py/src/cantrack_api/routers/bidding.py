@@ -74,6 +74,7 @@ from ..replay import (
     find_gps_at,
     read_timeline,
 )
+from ..fare_cap import FareMarket
 from ..schemas import (
     PRICE_STEP_COP,
     CreateBiddingRequestBody,
@@ -123,6 +124,10 @@ WINDOW_FUTURE_MESSAGE = "windowStart must be in the future."
 WINDOW_TOO_FAR_MESSAGE = "windowStart must be within the next 30 days."
 
 RAISE_HIGHER_MESSAGE = "The new fare must be higher than the current one."
+FARE_CEILING_MESSAGE = (
+    "The price cannot be more than three times the recommended price "
+    "(at most {max_cop} COP)."
+)
 
 #: The highest fare an owner may offer (same cap as the create body).
 MAX_FARE_COP = 1_000_000
@@ -205,6 +210,8 @@ class OpenRequestCardView(BaseModel):
     dogName: str | None = None
     ownerName: str | None = None
     fareCop: int
+    #: Highest counter offer: twice the fare, capped at three times the recommended price.
+    maxCounterCop: int
     distanceKm: float
     myOffer: OfferSummaryView | None = None
 
@@ -266,11 +273,21 @@ def _offer_kind(price_cop: int, fare_cop: int) -> Literal["accept", "counter"]:
     return "accept" if price_cop == fare_cop else "counter"
 
 
+def _reject_above_ceiling(price_cop: int, ceiling_cop: int) -> None:
+    """400 when ``price_cop`` passes three times the recommended price. O(1)."""
+    if price_cop > ceiling_cop:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=FARE_CEILING_MESSAGE.format(max_cop=ceiling_cop),
+        )
+
+
 def _request_cards(
     supabase: Client,
     rows: list[dict[str, Any]],
     walker_id: str,
     position: dict[str, Any],
+    market: FareMarket,
 ) -> list[dict[str, Any]]:
     """Build the inbox cards for ``rows`` with batched lookups.
 
@@ -314,8 +331,13 @@ def _request_cards(
         fare_cop = row["price_cop"]
         offer = my_offers.get(row["id"])
         card = _open_view(row)
+        ceiling = market.suggest(
+            float(row["duration_hours"]) * 60.0, row["pickup_lat"], row["pickup_lng"]
+        ).ceiling_cop
         card.update(
             {
+                # The counter stops at twice the fare and at three times the recommended price.
+                "maxCounterCop": min(COUNTER_FARE_MULTIPLIER * fare_cop, ceiling),
                 "dogName": dog_names.get(row["dog_id"]),
                 "ownerName": owner_names.get(row["owner_id"]),
                 "fareCop": fare_cop,
@@ -400,6 +422,12 @@ def create_bidding_request(
         body.durationMinutes / 60.0
         if body.durationMinutes is not None
         else float(body.durationHours)
+    )
+    _reject_above_ceiling(
+        body.priceCop,
+        FareMarket.load(supabase, now)
+        .suggest(duration_hours * 60.0, body.pickupLat, body.pickupLng)
+        .ceiling_cop,
     )
     try:
         window_end = window_start + timedelta(hours=duration_hours)
@@ -561,7 +589,9 @@ def list_open_requests(
             capacity=DEFAULT_CONFIG.walker_capacity,
         ):
             visible.append(walk_request)
-    return _request_cards(supabase, visible, user.id, my_position)
+    return _request_cards(
+        supabase, visible, user.id, my_position, FareMarket.load(supabase, now)
+    )
 
 
 def _is_visible_to_walker(
@@ -828,6 +858,16 @@ def send_offer(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=COUNTER_PRICE_MESSAGE
             )
+        _reject_above_ceiling(
+            body.priceCop,
+            FareMarket.load(supabase, now)
+            .suggest(
+                float(walk_request["duration_hours"]) * 60.0,
+                walk_request["pickup_lat"],
+                walk_request["pickup_lng"],
+            )
+            .ceiling_cop,
+        )
         price_cop = body.priceCop
     kind = _offer_kind(price_cop, fare_cop)
 
@@ -1538,6 +1578,16 @@ def raise_fare(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=RAISE_HIGHER_MESSAGE
         )
+    _reject_above_ceiling(
+        body.priceCop,
+        FareMarket.load(supabase, now)
+        .suggest(
+            float(walk_request["duration_hours"]) * 60.0,
+            walk_request["pickup_lat"],
+            walk_request["pickup_lng"],
+        )
+        .ceiling_cop,
+    )
     rows = run_query(
         supabase.table(REQUESTS_TABLE)
         .update(

@@ -23,6 +23,7 @@ from ..app import limiter
 from ..bidding import DEFAULT_CONFIG
 from ..bidding_eligibility import nearby_walker_ids, project_to_metres
 from ..db import run_query
+from ..fare_cap import FARE_STEP_COP, MIN_FARE_COP, FareMarket
 from ..deps import current_role, get_current_user, get_now, get_supabase
 from ..geo import haversine_km
 from .. import walker_access
@@ -47,14 +48,6 @@ OFFERED_DURATIONS = frozenset({30, 45, 60, 90, 120})
 #: The statuses whose agreed offer price counts towards the fare market.
 AGREED_STATUSES = ["assigned", "in_walk", "done"]
 
-#: How far back agreed prices stay representative for the suggestion.
-MARKET_WINDOW_DAYS = 60
-
-#: Fallback fare: COP per minute, and the rounding/minimum in COP.
-DEFAULT_COP_PER_MINUTE = 330
-MIN_FARE_COP = 8000
-FARE_STEP_COP = 1000
-
 BAD_CURSOR_MESSAGE = "The cursor is not valid."
 BAD_DURATION_MESSAGE = "durationMinutes must be one of 30, 45, 60, 90 or 120."
 OWNERS_ONLY_MESSAGE = "Only owners can use this."
@@ -69,6 +62,8 @@ class FareSuggestionView(BaseModel):
     sampleSize: int
     minCop: int
     stepCop: int
+    #: Ceiling for a fare or counter offer: three times the recommended price.
+    maxCop: int
 
 
 class OwnerRequestItem(BaseModel):
@@ -123,18 +118,6 @@ def _utc_key(value: str) -> str:
     """
     parsed = datetime.fromisoformat(value)
     return parsed.astimezone(timezone.utc).isoformat()
-
-
-def _median(values: list[float]) -> float:
-    """Return the median of a non-empty list. O(n log n) (sorting dominates).
-
-    An even-sized list answers the mean of the two middle values.
-    """
-    ordered = sorted(values)
-    middle = len(ordered) // 2
-    if len(ordered) % 2:
-        return ordered[middle]
-    return (ordered[middle - 1] + ordered[middle]) / 2.0
 
 
 def _encode_cursor(created_at: str, request_id: str) -> str:
@@ -227,70 +210,14 @@ def suggest_fare(
             status_code=status.HTTP_400_BAD_REQUEST, detail=BAD_DURATION_MESSAGE
         )
 
-    cutoff = now - timedelta(days=MARKET_WINDOW_DAYS)
-    rows = run_query(
-        supabase.table(REQUESTS_TABLE)
-        .select("*")
-        .in_("status", AGREED_STATUSES)
-    )
-    eligible = []
-    for row in rows:
-        if not row.get("walker_id"):
-            continue
-        try:
-            created_at = datetime.fromisoformat(row["created_at"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if created_at < cutoff:
-            continue
-        try:
-            distance = haversine_km(
-                lat, lng, row["pickup_lat"], row["pickup_lng"]
-            )
-        except (KeyError, TypeError, ValueError):
-            continue
-        if distance <= DEFAULT_CONFIG.radius_km:
-            eligible.append(row)
-
-    prices_per_minute: list[float] = []
-    if eligible:
-        offers = run_query(
-            supabase.table(OFFERS_TABLE)
-            .select("*")
-            .in_("walk_request_id", [row["id"] for row in eligible])
-        )
-        by_pair = {
-            (offer["walk_request_id"], offer["walker_id"]): offer
-            for offer in offers
-        }
-        for row in eligible:
-            offer = by_pair.get((row["id"], row["walker_id"]))
-            if offer is None:
-                continue
-            try:
-                minutes = float(row["duration_hours"]) * 60.0
-                price = float(offer["price_cop"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if minutes <= 0:
-                continue
-            prices_per_minute.append(price / minutes)
-
-    sample_size = len(prices_per_minute)
-    if sample_size >= 5:
-        basis = "market"
-        raw = _median(prices_per_minute) * durationMinutes
-    else:
-        basis = "default"
-        raw = DEFAULT_COP_PER_MINUTE * durationMinutes
-
-    rounded = int(math.floor(raw / FARE_STEP_COP + 0.5)) * FARE_STEP_COP
+    suggestion = FareMarket.load(supabase, now).suggest(durationMinutes, lat, lng)
     return {
-        "suggestedCop": max(MIN_FARE_COP, rounded),
-        "basis": basis,
-        "sampleSize": sample_size,
+        "suggestedCop": suggestion.suggested_cop,
+        "basis": suggestion.basis,
+        "sampleSize": suggestion.sample_size,
         "minCop": MIN_FARE_COP,
         "stepCop": FARE_STEP_COP,
+        "maxCop": suggestion.ceiling_cop,
     }
 
 
