@@ -18,6 +18,7 @@ from supabase_auth.types import User
 from cantrack_ai.embeddings import ClipEmbedder
 
 from .ai_chain import ChainText, ChainVision
+from .dog_traits import ChainDogTraits
 
 BEARER = "bearer"
 
@@ -91,6 +92,19 @@ def get_text_model() -> ChainText:
         A ``ChainText`` configured from the environment.
     """
     return ChainText.from_env()
+
+
+@lru_cache(maxsize=1)
+def get_dog_traits() -> ChainDogTraits:
+    """Return the process-wide breed/size chain, built on first use. O(1).
+
+    Disabled (never calls out) when no provider key is set. Tests swap it
+    through ``app.dependency_overrides[get_dog_traits]``.
+
+    Returns:
+        A ``ChainDogTraits`` configured from the environment.
+    """
+    return ChainDogTraits.from_env()
 
 
 def get_now() -> datetime:

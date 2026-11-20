@@ -14,7 +14,7 @@ One line each, from the code that actually calls them.
 | Rating window | `rating_window` | `GET /bidding/requests/{request_id}/offers` | add/average O(1) |
 | Singly linked list | `singly_list` | `POST /routes` | append O(1), rebuild O(n) |
 | Stack | `stack` | `DELETE /routes/{route_id}/checkin/undo` | push/pop O(1) |
-| Token bucket | `token_bucket` | `POST /bidding/requests/{request_id}/walker-cancel` | take/available O(1) |
+| Token bucket | `token_bucket` | `POST /bidding/requests/{request_id}/walker-cancel`, `POST /dogs/{dog_id}/suggest` | take/available O(1) |
 | Union-Find | `union_find` | `POST /plans/suggest` | union/find O(alpha(n)) |
 | Walk state machine | `walk_state_machine` | `POST /bidding/requests/{request_id}/pick` | next_state O(1) |
 | Weighted graph | `weighted_graph` | `POST /routes/path` | shortest_path O(V^2 + E) |
@@ -103,6 +103,7 @@ One line each, from the code that actually calls them.
 
 - Job: Enforces the weekly cancellation budget so a walker cannot cancel unlimited walks.
 - Used by: `POST /bidding/requests/{request_id}/walker-cancel` through `apps/api-py/src/cantrack_api/routers/bidding.py:1254`.
+- Also used by: `POST /dogs/{dog_id}/suggest` through `apps/api-py/src/cantrack_api/routers/dogs.py:80`, one bucket per owner (10 breed/size suggestions per hour), because each suggestion is a paid vision call.
 - Cost: available O(1), take O(1).
 - Why not a list/dict: The budget is three scalars plus a last-seen timestamp; storing every spend event in a list would grow without bound, while the bucket derives the refill from time in O(1).
 - Likely professor question: "Why refill the whole bucket instead of dripping tokens in?" — The product rule is a weekly allowance, so crossing a boundary restores capacity; this keeps the state O(1) and lets the stored `remaining` count replay the bucket.
