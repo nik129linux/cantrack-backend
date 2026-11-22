@@ -179,6 +179,34 @@ def test_owner_stats_returns_six_zero_months_when_owner_has_no_activity(
     }
 
 
+def test_owner_stats_groups_requested_times_by_utc_month(fake_client, fake, fake_clock):
+    fake_clock.now = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
+    seed_walk(
+        fake, owner_id="owner-a", walker_id="walker-september",
+        requested_time="2025-08-31T23:30:00-02:00",
+    )
+    seed_walk(
+        fake, owner_id="owner-a", walker_id="walker-august",
+        requested_time="2025-09-01T00:30:00+02:00",
+    )
+
+    response = fake_client.get(OWNER_PATH, headers=bearer("token-a"))
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "walksByMonth": [
+            {"month": "2025-08", "count": 1},
+            {"month": "2025-09", "count": 1},
+            {"month": "2025-10", "count": 0},
+            {"month": "2025-11", "count": 0},
+            {"month": "2025-12", "count": 0},
+            {"month": "2026-01", "count": 0},
+        ],
+        "checkoutsReceived": 0,
+        "distinctWalkers": 0,
+    }
+
+
 def test_owner_stats_are_isolated_between_owners(fake_client, fake, fake_clock):
     fake_clock.now = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
     seed_owner_story(fake)
