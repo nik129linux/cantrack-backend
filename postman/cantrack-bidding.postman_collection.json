@@ -465,7 +465,7 @@
       ]
     },
     {
-      "name": "Check out (walker)",
+      "name": "NEG check-out without a photo → 400",
       "request": {
         "method": "POST",
         "header": [
@@ -497,10 +497,64 @@
           "script": {
             "type": "text/javascript",
             "exec": [
+              "pm.test(\"400 (the return photo is required)\", function () {",
+              "    pm.response.to.have.status(400);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Check out (walker)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{walkerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bidding/requests/{{walkId}}/check-out",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bidding",
+            "requests",
+            "{{walkId}}",
+            "check-out"
+          ]
+        },
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "image",
+              "type": "file",
+              "src": "fixtures/dog.jpg"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
               "pm.test(\"200 OK\", function () {",
               "    pm.response.to.have.status(200);",
               "});",
-              "pm.test(\"done\", function () { pm.expect(pm.response.json().status).to.eql(\"done\"); });"
+              "pm.test(\"done\", function () { pm.expect(pm.response.json().status).to.eql(\"done\"); });",
+              "pm.test(\"photo AI verdict comes back (advice only)\", function () {",
+              "    const ai = pm.response.json().ai;",
+              "    pm.expect(ai).to.be.an(\"object\");",
+              "    pm.expect([\"match\", \"uncertain\", \"unknown\", \"unavailable\"]).to.include(ai.match);",
+              "    pm.expect([\"match\", \"uncertain\", \"unknown\", \"unavailable\"]).to.include(ai.sameAsCheckIn.match);",
+              "    pm.expect([\"ok\", \"concern\", \"no_dog\", \"unavailable\"]).to.include(ai.condition);",
+              "});"
             ]
           }
         }

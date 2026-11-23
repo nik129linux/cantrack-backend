@@ -145,6 +145,30 @@ class WalkerCard(BaseModel):
     ratingCount: int
 
 
+class PhotoChecks(BaseModel):
+    """The AI's read of the pickup and return photos; None when no photo came in."""
+
+    checkIn: dict[str, Any] | None = None
+    checkOut: dict[str, Any] | None = None
+
+
+def _public_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """A timeline payload without the server-side CLIP vector. O(k) keys."""
+    return {key: value for key, value in (payload or {}).items() if key != "embedding"}
+
+
+def _photo_checks(timeline_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pick the check-in/check-out photo verdicts out of the timeline. O(t)."""
+    checks: dict[str, Any] = {"checkIn": None, "checkOut": None}
+    for event in timeline_rows:
+        ai = (event.get("payload") or {}).get("ai")
+        if event["kind"] == "check_in" and ai:
+            checks["checkIn"] = ai
+        elif event["kind"] == "check_out" and ai:
+            checks["checkOut"] = ai
+    return checks
+
+
 class TimelineEvent(BaseModel):
     """One event of a walk's timeline."""
 
@@ -178,6 +202,7 @@ class WalkDetail(BaseModel):
     rating: float | None
     report: WalkReport | None
     allowedActions: list[str]
+    photoChecks: PhotoChecks = Field(default_factory=lambda: PhotoChecks())
 
 
 class GpsPointBody(BaseModel):
@@ -747,10 +772,11 @@ def get_walk_detail(
             {
                 "kind": event["kind"],
                 "at": event["at"],
-                "payload": event.get("payload") or {},
+                "payload": _public_payload(event.get("payload")),
             }
             for event in timeline_rows
         ],
+        "photoChecks": _photo_checks(timeline_rows),
         "rating": rating,
         "report": report,
         "allowedActions": _allowed_actions(row, user, now, rating is not None),

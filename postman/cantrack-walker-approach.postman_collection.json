@@ -1091,6 +1091,16 @@
                 "{{walkId}}",
                 "check-out"
               ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "image",
+                  "type": "file",
+                  "src": "fixtures/dog.jpg"
+                }
+              ]
             }
           },
           "event": [

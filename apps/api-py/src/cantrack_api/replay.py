@@ -47,7 +47,12 @@ def build_timeline(walk_rows: list[dict[str, Any]]) -> DoublyLinkedList[Timeline
             TimelineEvent(
                 kind=walk_row["kind"],
                 at=walk_row["at"],
-                payload=walk_row["payload"],
+                # The check-in CLIP vector stays server side.
+                payload={
+                    key: value
+                    for key, value in (walk_row["payload"] or {}).items()
+                    if key != "embedding"
+                },
             )
         )
     return walk_timeline

@@ -76,7 +76,7 @@ def test_dog_without_embedding_is_unknown(fake_client, fake):
     seed_walk(fake, embedding=None)
     res = check_in(fake_client, b"photo-rex")
     assert res.json()["status"] == "in_walk"
-    assert res.json()["ai"] == {"match": "unknown", "similarity": None}
+    assert {k: res.json()["ai"][k] for k in ("match", "similarity")} == {"match": "unknown", "similarity": None}
 
 
 def test_embedder_failure_never_blocks_the_walk(fake_client, fake, embedder):
@@ -85,7 +85,7 @@ def test_embedder_failure_never_blocks_the_walk(fake_client, fake, embedder):
     res = check_in(fake_client, b"photo-rex")
     assert res.status_code == 200
     assert res.json()["status"] == "in_walk"
-    assert res.json()["ai"] == {"match": "unavailable", "similarity": None}
+    assert {k: res.json()["ai"][k] for k in ("match", "similarity")} == {"match": "unavailable", "similarity": None}
 
 
 def test_unreadable_photo_never_blocks_the_walk(fake_client, fake):
@@ -93,7 +93,7 @@ def test_unreadable_photo_never_blocks_the_walk(fake_client, fake):
     res = check_in(fake_client, b"garbage")  # FakeEmbedder raises ImageError for this
     assert res.status_code == 200
     assert res.json()["status"] == "in_walk"
-    assert res.json()["ai"] == {"match": "unavailable", "similarity": None}
+    assert {k: res.json()["ai"][k] for k in ("match", "similarity")} == {"match": "unavailable", "similarity": None}
 
 
 def test_only_the_assigned_walker_can_check_in_with_a_photo(fake_client, fake, embedder):
@@ -120,5 +120,5 @@ def test_oversized_photo_is_not_embedded_and_never_blocks_the_walk(fake_client, 
     res = check_in(fake_client, b"x" * (MAX_IMAGE_BYTES + 1))
     assert res.status_code == 200
     assert res.json()["status"] == "in_walk"
-    assert res.json()["ai"] == {"match": "unavailable", "similarity": None}
+    assert {k: res.json()["ai"][k] for k in ("match", "similarity")} == {"match": "unavailable", "similarity": None}
     assert embedder.calls == []  # never handed to the model
