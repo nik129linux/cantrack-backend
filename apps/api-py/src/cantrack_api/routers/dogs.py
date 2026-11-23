@@ -8,26 +8,37 @@ somebody else is indistinguishable from one that does not exist: both are a
 
 import io
 import logging
+import time
 import uuid
+from threading import Lock
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
 from supabase import Client
 from supabase_auth.types import User
 
 from cantrack_ai.embeddings import ClipEmbedder
 from ..db import first_row, run_query
-from ..deps import current_role, get_current_user, get_embedder, get_supabase
+from ..deps import (
+    current_role,
+    get_current_user,
+    get_dog_traits,
+    get_embedder,
+    get_supabase,
+)
+from ..dog_traits import ChainDogTraits
 from ..schemas import CreateDogBody, DogProfileBody, UpdateDogBody
+from ..structures.token_bucket import TokenBucket
 from ..uploads import (
     MAX_REFERENCE_PHOTOS,
     PHOTO_COUNT_MESSAGE,
+    UNREADABLE_MESSAGE,
     embed_image,
     mean_embedding,
     read_image,
 )
-from .profile import AVATAR_BUCKET, avatar_urls
+from .profile import AVATAR_BUCKET, MAX_AVATAR_PIXELS, avatar_urls
 
 router = APIRouter(prefix="/dogs")
 logger = logging.getLogger(__name__)
@@ -44,6 +55,99 @@ OWNERS_ONLY_MESSAGE = "Only owners can manage dogs."
 
 #: The column the server-side embedding lives in; it is never sent back.
 EMBEDDING_COLUMN = "embedding"
+
+#: Breed/size suggestions an owner may ask for per hour; each one is a paid
+#: vision call, so the budget is small and refills whole every hour.
+SUGGEST_BUDGET = 10
+SUGGEST_PERIOD_SECONDS = 3600
+SUGGEST_LIMIT_MESSAGE = "Too many suggestions. Try again later."
+
+_suggest_buckets: dict[str, TokenBucket] = {}
+_suggest_lock = Lock()
+
+
+def _suggest_now() -> float:
+    """Return epoch seconds; tests replace this clock. O(1)."""
+    return time.time()
+
+
+def _reset_suggest_buckets() -> None:
+    """Forget every owner's suggestion budget (test isolation). O(n) owners."""
+    with _suggest_lock:
+        _suggest_buckets.clear()
+
+
+def _take_suggestion(owner_id: str) -> bool:
+    """Spend one of the owner's suggestions; False when the hour is used up. O(1)."""
+    with _suggest_lock:
+        now = _suggest_now()
+        bucket = _suggest_buckets.get(owner_id)
+        if bucket is None:
+            bucket = TokenBucket(SUGGEST_BUDGET, SUGGEST_PERIOD_SECONDS, now)
+            _suggest_buckets[owner_id] = bucket
+        return bucket.take(now)
+
+
+@router.post("/{dog_id}/suggest")
+def suggest_dog_traits(
+    dog_id: uuid.UUID,
+    image: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase),
+    traits: ChainDogTraits = Depends(get_dog_traits),
+) -> dict[str, str | None]:
+    """Suggest a breed and size from one photo, storing neither.
+
+    Args:
+        dog_id: The id of the owner's dog.
+        image: One photo in the ``image`` multipart field.
+        user: The authenticated owner.
+        supabase: The client used to check ownership.
+        traits: The injectable vision chain.
+
+    Returns:
+        ``{breed, size}``; both null when the model could not tell.
+
+    Raises:
+        HTTPException: 403 for non-owners, 400 for an invalid image, 413 for an
+            oversized one, 404 for a dog the caller does not own, 429 once the
+            hourly budget is spent, 500 if the database cannot be read.
+
+    Big-O:
+        O(n + p + m) for n image bytes, p pixels and m answer characters, plus
+        O(1) for the budget; database and model latency excluded.
+    """
+    if current_role(user) != "owner":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=OWNERS_ONLY_MESSAGE)
+    photo = read_image(image)
+    try:
+        with Image.open(io.BytesIO(photo)) as decoded:
+            # Image.open reads only the header: refuse a huge canvas (a
+            # decompression bomb) before load() inflates it.
+            width, height = decoded.size
+            if width * height > MAX_AVATAR_PIXELS:
+                raise ValueError("image dimensions too large")
+            decoded.load()
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError, SyntaxError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=UNREADABLE_MESSAGE
+        ) from exc
+
+    first_row(
+        run_query(
+            supabase.table(DOGS_TABLE).select("id")
+            .eq("id", str(dog_id)).eq("owner_id", user.id)
+        ),
+        NOT_FOUND_MESSAGE,
+    )
+    if not _take_suggestion(user.id):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=SUGGEST_LIMIT_MESSAGE
+        )
+    result = traits.suggest(photo, image.content_type)
+    if result is None:
+        return {"breed": None, "size": None}
+    return {"breed": result.breed, "size": result.size}
 
 
 @router.get("")

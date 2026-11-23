@@ -2,6 +2,7 @@
 
 from cantrack_ai.embeddings import ImageError
 from cantrack_ai.vision import PhotoCheck
+from cantrack_api.dog_traits import DogTraits
 
 # Three well separated 4-d "CLIP" vectors. Real ones have 512 dims; the maths is the same.
 E_REX = [1.0, 0.0, 0.0, 0.0]
@@ -52,4 +53,16 @@ class FakeTextModel:
 
     def complete_json(self, system: str, prompt: str) -> dict | None:
         self.calls.append((system, prompt))
+        return self.result
+
+
+class FakeDogTraits:
+    """Double of ``ChainDogTraits``: returns ``result`` (traits or None) and records calls."""
+
+    def __init__(self) -> None:
+        self.result: DogTraits | None = DogTraits("Mestizo", "medium")
+        self.calls: list[tuple[bytes, str]] = []
+
+    def suggest(self, image_bytes: bytes, mime: str) -> DogTraits | None:
+        self.calls.append((image_bytes, mime))
         return self.result
