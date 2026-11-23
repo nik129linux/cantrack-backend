@@ -60,9 +60,18 @@ from ..bidding_eligibility import (
     project_to_metres,
 )
 from ..db import first_row, run_query
-from ..deps import current_role, get_current_user, get_embedder, get_now, get_supabase, get_text_model
+from ..deps import (
+    current_role,
+    get_current_user,
+    get_embedder,
+    get_now,
+    get_photo_condition,
+    get_supabase,
+    get_text_model,
+)
 from ..geo import haversine_km
-from ..uploads import MAX_IMAGE_BYTES
+from ..uploads import MAX_IMAGE_BYTES, read_image
+from ..walk_photo_ai import ChainCondition, condition_label
 from ..walker_access import ensure_walker_profile, is_online
 from .profile import avatar_urls
 from ..walk_report import build_and_store_walk_report
@@ -172,16 +181,20 @@ BUSY_STATUSES = ["assigned", "in_walk"]
 #: real demo dogs before trusting it; below it the walker confirms by eye.
 DOG_MATCH_SIMILARITY = 0.88
 
+#: Check-out needs a photo of the dog at return (Nico, 11-23).
+CHECK_OUT_PHOTO_MESSAGE = "A photo of the dog is required to finish the walk."
+
 #: Quadtree bounds in metres (the eligibility tests use the same).
 QUADTREE_BOUNDS = (-20_000_000.0, -20_000_000.0, 20_000_000.0, 20_000_000.0)
 
 
 class CheckOutResponse(BaseModel):
-    """The walk after a successful check-out."""
+    """The walk after a successful check-out, with the return photo's verdict."""
 
     id: str
     status: str
     walkerId: str | None = None
+    ai: dict[str, Any] | None = None
 
 
 class OfferSummaryView(BaseModel):
@@ -1406,6 +1419,7 @@ def _apply_transition(
     patch: dict[str, Any],
     timeline_kind: str | None,
     now: datetime,
+    payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate, compare-and-set and append the timeline row for a transition. O(1).
 
@@ -1417,6 +1431,7 @@ def _apply_transition(
         patch: The columns to set on ``walk_requests``.
         timeline_kind: The ``walk_timeline`` kind to append, or None.
         now: The current time (dependency, frozen in tests).
+        payload: The timeline row's ``payload`` (the photo AI verdict), or {}.
 
     Returns:
         ``{id, status, walkerId}`` of the updated row.
@@ -1443,7 +1458,7 @@ def _apply_transition(
                     "walk_request_id": request_id,
                     "kind": timeline_kind,
                     "at": now.isoformat(),
-                    "payload": {},
+                    "payload": payload or {},
                 }
             )
         )
@@ -1691,53 +1706,101 @@ def mark_no_show(
     )
 
 
-def _check_in_ai(
-    supabase: Client,
-    walk_request: dict[str, Any],
-    image: UploadFile,
-    embedder: ClipEmbedder,
-) -> dict[str, Any]:
-    """Compare a check-in photo with the request's dog. Advice, never a gate. O(1).
-
-    The photo is embedded with the CLIP embedder and scored against the dog's
-    enrolled vector by cosine similarity. Every failure — an unreadable photo, a
-    broken model, a missing dog row — is reported as ``unavailable`` instead of
-    raising: the walk starts whatever the AI says. The photo itself is dropped
-    once embedded; nothing is stored.
-
-    Args:
-        supabase: The Supabase client, read for the dog's embedding.
-        walk_request: The stored request; its ``dog_id`` names the dog to match.
-        image: The ``image`` part of the multipart request.
-        embedder: The CLIP embedder, injected as a dependency.
-
-    Returns:
-        ``{"match": ..., "similarity": ...}`` where ``match`` is ``match``
-        (>= ``DOG_MATCH_SIMILARITY``), ``uncertain`` (below it), ``unknown``
-        (the dog has no enrolled embedding) or ``unavailable`` (any failure).
-        ``similarity`` is rounded to 4 decimals, None for unknown/unavailable.
-    """
-    unavailable = {"match": "unavailable", "similarity": None}
-    try:
-        dog_rows = run_query(
-            supabase.table(DOGS_TABLE)
-            .select("*")
-            .eq("id", walk_request["dog_id"])
-        )
-        stored = parse_embedding(dog_rows[0].get("embedding")) if dog_rows else None
-        if stored is None:
-            return {"match": "unknown", "similarity": None}
-        data = image.file.read(MAX_IMAGE_BYTES + 1)
-        if len(data) > MAX_IMAGE_BYTES:
-            return unavailable  # same 5 MB cap as every other upload; never reaches the model
-        embedding = embedder.embed(data)
-        similarity = cosine_similarity(embedding, stored)
-    except Exception:
-        return unavailable
+def _match(similarity: float) -> dict[str, Any]:
+    """Label one cosine against ``DOG_MATCH_SIMILARITY``. O(1)."""
     return {
         "match": "match" if similarity >= DOG_MATCH_SIMILARITY else "uncertain",
         "similarity": round(similarity, 4),
     }
+
+
+def _photo_ai(
+    supabase: Client,
+    walk_request: dict[str, Any],
+    data: bytes,
+    embedder: ClipEmbedder,
+    condition: ChainCondition,
+    check_in_vector: list[float] | None = None,
+    compare_with_check_in: bool = False,
+) -> tuple[dict[str, Any], list[float] | None]:
+    """Read one walk photo: which dog, and how it looks. Advice, never a gate. O(d).
+
+    CLIP embeds the photo and scores it against the dog's enrolled vector (and,
+    at check-out, against the check-in photo's vector); the vision chain reads
+    the dog's condition. Every failure is reported as ``unavailable``/``unknown``
+    instead of raising, so the walk moves whatever the AI says. The photo is
+    dropped here; only the verdict (and the check-in vector) is kept.
+
+    Args:
+        supabase: The Supabase client, read for the dog's enrolled vector.
+        walk_request: The stored request; its ``dog_id`` names the dog.
+        data: The photo bytes, already capped at ``MAX_IMAGE_BYTES``.
+        embedder: The CLIP embedder.
+        condition: The vision chain that reads the dog's condition.
+        check_in_vector: The check-in photo's vector, when there was one.
+        compare_with_check_in: True at check-out, to add ``sameAsCheckIn``.
+
+    Returns:
+        ``(ai, vector)``: ``ai`` is ``{match, similarity, [sameAsCheckIn],
+        condition, note}``; ``vector`` is this photo's CLIP vector or None.
+
+    Big-O: O(d) for the d-dimensional cosines; model latency excluded.
+    """
+    unavailable = {"match": "unavailable", "similarity": None}
+    unknown = {"match": "unknown", "similarity": None}
+    vector: list[float] | None = None
+    try:
+        vector = embedder.embed(data)
+    except Exception:
+        vector = None
+    enrolled_vector = None
+    if vector is not None:
+        try:
+            dog_rows = run_query(
+                supabase.table(DOGS_TABLE).select("*").eq("id", walk_request["dog_id"])
+            )
+            enrolled_vector = parse_embedding(dog_rows[0].get("embedding")) if dog_rows else None
+            enrolled = unknown if enrolled_vector is None else _match(cosine_similarity(vector, enrolled_vector))
+        except Exception:
+            enrolled = unavailable
+    else:
+        enrolled = unavailable
+    ai: dict[str, Any] = dict(enrolled)
+    if compare_with_check_in:
+        if vector is None:
+            ai["sameAsCheckIn"] = dict(unavailable)
+        elif check_in_vector is None:
+            ai["sameAsCheckIn"] = dict(unknown)
+        else:
+            try:
+                ai["sameAsCheckIn"] = _match(cosine_similarity(vector, check_in_vector))
+            except Exception:
+                ai["sameAsCheckIn"] = dict(unavailable)
+    try:
+        reading = condition.assess(data)
+    except Exception:
+        reading = None
+    ai["condition"] = condition_label(reading)
+    ai["note"] = reading.note if reading is not None and reading.dog_visible else None
+    return ai, vector
+
+
+def _check_in_vector(supabase: Client, request_id: str) -> list[float] | None:
+    """The CLIP vector stored with the walk's check-in photo, if any. O(t)."""
+    try:
+        rows = run_query(
+            supabase.table(TIMELINE_TABLE)
+            .select("*")
+            .eq("walk_request_id", request_id)
+            .eq("kind", "check_in")
+        )
+    except Exception:
+        return None
+    for row in rows:
+        vector = (row.get("payload") or {}).get("embedding")
+        if isinstance(vector, list) and vector:
+            return [float(value) for value in vector]
+    return None
 
 
 @router.post("/requests/{request_id}/check-in")
@@ -1748,15 +1811,17 @@ def check_in_walk(
     supabase: Client = Depends(get_supabase),
     now: datetime = Depends(get_now),
     embedder: ClipEmbedder = Depends(get_embedder),
+    condition: ChainCondition = Depends(get_photo_condition),
 ) -> dict[str, Any]:
     """Start the walk (the assigned walker only).
 
     ``CHECK_IN`` moves the walk from ``assigned`` to ``in_walk`` and appends
     a ``check_in`` row to the walk's timeline; any other state is a 409. An
-    optional ``image`` (one photo of the dog at pickup) is embedded and compared
-    with the dog's enrolled vector: the answer gains ``ai: {match,
-    similarity}``. The AI is advice only — the walk always starts, and a model
-    failure or an unreadable photo never raises.
+    optional ``image`` (one photo of the dog at pickup) is read twice: CLIP
+    compares it with the dog's enrolled vector and the vision chain reads the
+    dog's condition. The answer gains ``ai: {match, similarity, condition,
+    note}``, stored in the timeline row with the photo's vector (for the
+    check-out comparison). The AI is advice only: the walk always starts.
 
     Args:
         request_id: The walk request to check in to.
@@ -1765,6 +1830,7 @@ def check_in_walk(
         supabase: The Supabase client.
         now: The current time (dependency, frozen in tests).
         embedder: The CLIP embedder, injected as a dependency.
+        condition: The vision chain reading the dog's condition.
 
     Returns:
         ``{id, status: "in_walk", walkerId}``, plus ``ai`` when a photo came in.
@@ -1774,6 +1840,18 @@ def check_in_walk(
             500 (database).
     """
     walk_request = _assigned_request(supabase, request_id, user.id)
+    _validate_lifecycle_transition(walk_request["status"], WalkEvent.CHECK_IN)
+    ai = None
+    payload: dict[str, Any] = {}
+    if image is not None:
+        data = image.file.read(MAX_IMAGE_BYTES + 1)
+        if len(data) > MAX_IMAGE_BYTES:
+            # Same 5 MB cap as every other upload: it never reaches a model.
+            ai = {"match": "unavailable", "similarity": None, "condition": "unavailable", "note": None}
+            payload = {"ai": ai}
+        else:
+            ai, vector = _photo_ai(supabase, walk_request, data, embedder, condition)
+            payload = {"ai": ai} if vector is None else {"ai": ai, "embedding": vector}
     resolved = _apply_transition(
         supabase,
         request_id,
@@ -1782,9 +1860,10 @@ def check_in_walk(
         {"status": "in_walk"},
         "check_in",
         now,
+        payload,
     )
-    if image is not None:
-        resolved["ai"] = _check_in_ai(supabase, walk_request, image, embedder)
+    if ai is not None:
+        resolved["ai"] = ai
     return resolved
 
 
@@ -1792,30 +1871,59 @@ def check_in_walk(
 def check_out_walk(
     request_id: str,
     background_tasks: BackgroundTasks,
+    image: UploadFile | None = File(default=None),
     user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase),
     now: datetime = Depends(get_now),
     text_model: Any = Depends(get_text_model),
+    embedder: ClipEmbedder = Depends(get_embedder),
+    condition: ChainCondition = Depends(get_photo_condition),
 ) -> dict[str, Any]:
-    """Finish the walk (the assigned walker only).
+    """Finish the walk (the assigned walker only), with a photo of the dog.
 
     ``CHECK_OUT`` moves the walk from ``in_walk`` to ``done`` and appends a
-    ``check_out`` row to the walk's timeline; any other state is a 409.
+    ``check_out`` row to the walk's timeline; any other state is a 409. The
+    ``image`` (the dog at return) is required: CLIP compares it with the dog's
+    enrolled vector and with the check-in photo (``sameAsCheckIn``), and the
+    vision chain reads the dog's condition. The verdict is stored in the
+    timeline row and fed to the walk report. A model failure never blocks the
+    check-out; only a missing or invalid photo does.
 
     Args:
         request_id: The walk request to check out of.
+        background_tasks: Runs the walk report after the response.
+        image: The photo of the dog at return (required).
         user: The authenticated walker.
         supabase: The Supabase client.
         now: The current time (dependency, frozen in tests).
+        text_model: The text model writing the walk report.
+        embedder: The CLIP embedder, injected as a dependency.
+        condition: The vision chain reading the dog's condition.
 
     Returns:
-        ``{id, status: "done", walkerId}``.
+        ``{id, status: "done", walkerId, ai}``.
 
     Raises:
-        HTTPException: 403 (not the assigned walker), 409 (illegal transition),
-            500 (database).
+        HTTPException: 403 (not the assigned walker), 409 (illegal
+            transition, checked before the photo), 400 (no photo or unsupported
+            type), 413 (photo over 5 MB), 500 (database).
     """
     walk_request = _assigned_request(supabase, request_id, user.id)
+    _validate_lifecycle_transition(walk_request["status"], WalkEvent.CHECK_OUT)
+    if image is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=CHECK_OUT_PHOTO_MESSAGE
+        )
+    data = read_image(image)
+    ai, _ = _photo_ai(
+        supabase,
+        walk_request,
+        data,
+        embedder,
+        condition,
+        check_in_vector=_check_in_vector(supabase, request_id),
+        compare_with_check_in=True,
+    )
     resolved = _apply_transition(
         supabase,
         request_id,
@@ -1824,7 +1932,9 @@ def check_out_walk(
         {"status": "done"},
         "check_out",
         now,
+        {"ai": ai},
     )
+    resolved["ai"] = ai
     # The report (and its optional model call, up to the client's timeout) runs
     # after the response is sent, so closing a walk never waits on the AI.
     background_tasks.add_task(build_and_store_walk_report, supabase, request_id, now, text_model)

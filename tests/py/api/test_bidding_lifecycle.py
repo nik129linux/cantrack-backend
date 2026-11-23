@@ -58,7 +58,8 @@ class TestLifecycle:
     def test_check_in_then_check_out_finishes(self, fake_client, fake):
         seed_assigned(fake)
         assert fake_client.post("/bidding/requests/walk-1/check-in", headers=bearer("token-w")).json()["status"] == "in_walk"
-        done = fake_client.post("/bidding/requests/walk-1/check-out", headers=bearer("token-w"))
+        done = fake_client.post("/bidding/requests/walk-1/check-out", headers=bearer("token-w"),
+                                files={"image": ("dog.jpg", b"photo-rex", "image/jpeg")})
         assert done.json()["status"] == "done"
         kinds = sorted(row["kind"] for row in
                        fake.table("walk_timeline").select("*").eq("walk_request_id", "walk-1").execute().data)

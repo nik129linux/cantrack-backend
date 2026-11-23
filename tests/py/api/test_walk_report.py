@@ -32,7 +32,9 @@ def walking(fake, fake_clock):
 
 
 def check_out(client):
-    return client.post("/bidding/requests/w1/check-out", headers=bearer("token-w"))
+    # Check-out needs the return photo (test_walk_photo_ai.py covers what the AI reads).
+    return client.post("/bidding/requests/w1/check-out", headers=bearer("token-w"),
+                       files={"image": ("dog.jpg", b"photo-rex", "image/jpeg")})
 
 
 def stored(fake):

@@ -19,6 +19,7 @@ from cantrack_ai.embeddings import ClipEmbedder
 
 from .ai_chain import ChainText, ChainVision
 from .dog_traits import ChainDogTraits
+from .walk_photo_ai import ChainCondition
 
 BEARER = "bearer"
 
@@ -105,6 +106,19 @@ def get_dog_traits() -> ChainDogTraits:
         A ``ChainDogTraits`` configured from the environment.
     """
     return ChainDogTraits.from_env()
+
+
+@lru_cache(maxsize=1)
+def get_photo_condition() -> ChainCondition:
+    """Return the process-wide check-in/out condition chain, built on first use. O(1).
+
+    Disabled (never calls out) when no provider key is set. Tests swap it
+    through ``app.dependency_overrides[get_photo_condition]``.
+
+    Returns:
+        A ``ChainCondition`` configured from the environment.
+    """
+    return ChainCondition.from_env()
 
 
 def get_now() -> datetime:

@@ -34,6 +34,13 @@ npx newman run cantrack-bidding.postman_collection.json \
   -e cantrack-bidding.postman_environment.json
 ```
 
+Check-out sends a photo of the dog (`fixtures/dog.jpg`, a multipart `image` file):
+since 11-23 the return photo is required, and the answer carries the AI verdict
+(`ai.match`, `ai.sameAsCheckIn`, `ai.condition`, `ai.note`). Run Newman from this
+folder so the file path resolves, or add `--working-dir postman` from the repo root.
+In the Postman app, if the request shows the file as missing, pick
+`postman/fixtures/dog.jpg` in the Body tab once.
+
 Keep real tokens out of git: copy the environment file to an untracked one
 (`cp cantrack-bidding.postman_environment.json local.env.json`), fill the tokens there,
 and run Newman with `-e local.env.json`.

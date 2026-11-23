@@ -3,6 +3,7 @@
 from cantrack_ai.embeddings import ImageError
 from cantrack_ai.vision import PhotoCheck
 from cantrack_api.dog_traits import DogTraits
+from cantrack_api.walk_photo_ai import PhotoCondition
 
 # Three well separated 4-d "CLIP" vectors. Real ones have 512 dims; the maths is the same.
 E_REX = [1.0, 0.0, 0.0, 0.0]
@@ -65,4 +66,16 @@ class FakeDogTraits:
 
     def suggest(self, image_bytes: bytes, mime: str) -> DogTraits | None:
         self.calls.append((image_bytes, mime))
+        return self.result
+
+
+class FakeCondition:
+    """Double of ``ChainCondition``: returns ``result`` (a reading or None) and records calls."""
+
+    def __init__(self) -> None:
+        self.result: PhotoCondition | None = PhotoCondition(dog_visible=True, condition="ok", note=None)
+        self.calls: list[bytes] = []
+
+    def assess(self, image_bytes: bytes) -> PhotoCondition | None:
+        self.calls.append(image_bytes)
         return self.result

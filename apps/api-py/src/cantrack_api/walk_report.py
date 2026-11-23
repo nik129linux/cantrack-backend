@@ -60,6 +60,10 @@ def build_and_store_walk_report(
         kinds = _timeline_kinds(supabase, request_id)
     except Exception:
         kinds = []
+    try:
+        photo_facts = _photo_facts(supabase, request_id)
+    except Exception:
+        photo_facts = ""
     status = "unavailable"
     text: str | None = None
     try:
@@ -71,12 +75,14 @@ def build_and_store_walk_report(
             system = (
                 "You write short dog-walk reports for the dog's owner, in Spanish "
                 "(Colombia), 2 or 3 sentences, warm and factual. Use only the facts "
-                "given; never invent incidents or health claims. Answer with one "
+                "given; never invent incidents or health claims. If a photo check "
+                "reports a concern, mention it plainly and calmly. Answer with one "
                 'JSON object {"text": ...}.'
             )
             prompt = (
                 f"Dog {dog_name} walked {distance_km:.2f} km "
                 f"in {duration_min} min. Events: {', '.join(kinds) if kinds else 'walk'}. "
+                f"{photo_facts}"
                 "Write a short friendly report as {text}."
             )
             answer = text_model.complete_json(system, prompt)
@@ -165,3 +171,32 @@ def _timeline_kinds(supabase: Any, request_id: str) -> list[str]:
         if kind and kind not in kinds:
             kinds.append(kind)
     return kinds
+
+
+def _photo_facts(supabase: Any, request_id: str) -> str:
+    """The check-in/out photo verdicts as prompt facts, or "" without photos. O(t)."""
+    rows = run_query(
+        supabase.table("walk_timeline").select("*").eq("walk_request_id", request_id)
+    )
+    facts: list[str] = []
+    for kind, label in (("check_in", "Pickup photo"), ("check_out", "Return photo")):
+        ai = next(
+            ((row.get("payload") or {}).get("ai") for row in rows if row.get("kind") == kind),
+            None,
+        )
+        if not isinstance(ai, dict):
+            continue
+        parts: list[str] = []
+        condition = ai.get("condition")
+        if condition == "ok":
+            parts.append("the dog looked fine")
+        elif condition == "concern":
+            parts.append(f"concern: {ai.get('note') or 'something to check'}")
+        same = (ai.get("sameAsCheckIn") or {}).get("match")
+        if same == "match":
+            parts.append("same dog as at pickup")
+        elif same == "uncertain":
+            parts.append("could not confirm it is the same dog as at pickup")
+        if parts:
+            facts.append(f"{label}: {'; '.join(parts)}.")
+    return (" ".join(facts) + " ") if facts else ""
