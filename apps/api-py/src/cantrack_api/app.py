@@ -66,6 +66,16 @@ def rate_limit_key(request: Request) -> str:
     if len(parts) == 2 and parts[0].lower() == "bearer" and parts[1].strip():
         digest = hashlib.sha256(parts[1].strip().encode()).hexdigest()[:32]
         return f"user:{digest}"
+    return client_ip_key(request)
+
+
+def client_ip_key(request: Request) -> str:
+    """Key anonymous auth limits by IP, ignoring unverified tokens. O(1).
+
+    Only trust a proxy header when explicitly configured for a proxy that
+    overwrites it. Caller-controlled bearer strings must never reset login,
+    signup, password-reset, verification, or refresh budgets.
+    """
     header_name = os.environ.get("CLIENT_IP_HEADER", "").strip()
     if header_name:
         header_value = request.headers.get(header_name.lower(), "").strip()

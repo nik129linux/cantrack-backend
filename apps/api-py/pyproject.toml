@@ -5,15 +5,16 @@ description = "CanTrack backend: FastAPI on top of Supabase (Postgres + Auth)."
 requires-python = ">=3.12"
 dependencies = [
     "cantrack-ai",
-    "fastapi>=0.142.2",
+    "fastapi>=0.163.2",
     "httpx>=0.28.1",
     "numpy>=2.5.3",
     "onnxruntime>=1.30.0",
-    "pillow>=12.3.0",
+    "pillow>=13.0.0",
     "pydantic[email]>=2.13.5",
     "python-dotenv>=1.2.3",
     "python-multipart>=0.0.32",
     "slowapi>=0.1.10",
+    "starlette>=1.3.1",
     "supabase>=2.31.0",
     "uvicorn[standard]>=0.54.0",
 ]
@@ -22,8 +23,8 @@ dependencies = [
 dev = [
     "hypothesis>=6.169",
     "pip-audit>=2.7.0",
-    "pytest>=8",
-    "schemathesis>=3.38,<4",
+    "pytest>=9.0.3",
+    "schemathesis>=4,<5",
 ]
 
 [tool.pytest.ini_options]

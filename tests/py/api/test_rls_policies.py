@@ -12,6 +12,7 @@ import pytest
 # tests/py/api/test_rls_policies.py -> parents[3] == cantrack-backend, parents[4] == cantrack-split.
 _BACKEND = pathlib.Path(__file__).resolve().parents[3]
 _CANDIDATES = [
+    _BACKEND / "apps" / "api-py" / "schema.sql",                     # complete repository
     _BACKEND.parent / "cantrack-db" / "apps" / "api-py" / "schema.sql",  # split repos (real layout)
     _BACKEND / "cantrack-db" / "apps" / "api-py" / "schema.sql",          # monorepo fallback
 ]

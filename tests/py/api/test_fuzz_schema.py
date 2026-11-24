@@ -4,7 +4,7 @@ PR0 widened it from /bidding to the whole API and sends a real owner or walker
 token, so generated input reaches the business logic instead of stopping at 401.
 
 No network: the app is built with the fake Supabase and FakeClock via dependency_overrides,
-and schemathesis drives it through the in-process ASGI transport (case.call_asgi()).
+and schemathesis drives it through the in-process ASGI transport (case.call()).
 Adds no structure code, so the heapq/bisect/collections/queue ban does not apply here.
 """
 
@@ -45,17 +45,15 @@ def _fuzz_app():
     return app
 
 
-# FastAPI emits OpenAPI 3.1.0; schemathesis 3.x only fully supports 3.0.x, so we ask it to
-# read the schema under the 3.0 interpretation. The bidding bodies are flat JSON with no
-# 3.1-only constructs, so this does not lose fidelity for what we fuzz.
-schema = schemathesis.from_asgi("/openapi.json", app=_fuzz_app(), force_schema_version="30")
+# Schemathesis 4 reads the native OpenAPI 3.1 schema without a downgrade.
+schema = schemathesis.openapi.from_asgi("/openapi.json", app=_fuzz_app())
 
 
 ALLOWED = (200, 201, 204, 304, 400, 401, 403, 404, 405, 409, 413, 422, 429)
 
 
 def _assert_no_server_error(case, token):
-    response = case.call_asgi(headers={"Authorization": f"Bearer {token}"})
+    response = case.call(headers={"Authorization": f"Bearer {token}"})
     assert response.status_code < 500, (
         f"{response.status_code} on {case.method} {case.operation.path} with {case.body!r}"
     )

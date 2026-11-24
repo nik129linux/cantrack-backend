@@ -150,7 +150,10 @@ class TestDetail:
         body = self.detail(fake_client).json()
         assert body["id"] == "w1" and body["status"] == "done"
         assert body["requestedTime"] == T10 and body["durationHours"] == 1.0
-        assert body["dog"] == {"id": "dog-luna", "name": "Luna"}
+        assert body["dog"] == {
+            "id": "dog-luna", "name": "Luna", "breed": None, "notes": None,
+            "photos": [], "care": {},
+        }
         assert body["walker"] == {"id": "walker-w", "name": "Mateo", "avatarUrl": None,
                                   "allTimeRating": None, "ratingCount": 0}
         assert body["priceCop"] == 18000
@@ -159,6 +162,25 @@ class TestDetail:
         assert body["rating"] is None
         assert body["report"] is None
         assert body["allowedActions"] == ["replay", "repeat", "rate"]
+
+    def test_assigned_walker_gets_reference_photos_and_care_not_contacts(self, fake_client, base):
+        base.tables["dogs"][0].update(
+            breed="Poodle", notes="No acercarse a otros perros",
+            profile={"temperament": "reactive", "medical_notes": "Toma medicamento",
+                     "vet_contact": "555", "emergency_contact": "999"},
+        )
+        base.storage.objects[("avatars", "owner-a/dogs/dog-luna/0.webp")] = b"photo"
+        seed_walk(base, "w1", "assigned")
+        response = self.detail(fake_client, token="token-w")
+        assert response.status_code == 200
+        dog = response.json()["dog"]
+        assert dog["breed"] == "Poodle"
+        assert dog["notes"] == "No acercarse a otros perros"
+        assert len(dog["photos"]) == 1
+        assert "dog-luna/0.webp?" in dog["photos"][0]
+        assert dog["care"] == {"temperament": "reactive", "medical_notes": "Toma medicamento"}
+        assert "vet_contact" not in dog["care"]
+        assert "emergency_contact" not in dog["care"]
 
     @pytest.mark.parametrize("status,actions", [
         ("open", ["pick", "cancel"]),

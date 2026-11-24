@@ -5,8 +5,10 @@ passwords are random. Every row goes through the schema-checked Supabase
 double, so a column the real database lacks fails here, not on review day.
 """
 
+import json
 import os
 import stat
+import subprocess
 
 import pytest
 
@@ -123,14 +125,69 @@ class TestResetAndCredentials:
         remaining = [user.email for user in db.auth.admin.list_users(page=1, per_page=200)]
         assert remaining == ["real.person@gmail.com"]
 
-    def test_credentials_file_is_private(self, tmp_path, seeded):
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_credentials_file_is_private(self, tmp_path, seeded, existing):
         _, credentials = seeded
         path = tmp_path / "demo-credentials.local.txt"
+        if existing:
+            path.write_text("An existing file with inherited permissions.")
+            os.chmod(path, 0o666)
         write_credentials(path, credentials)
-        mode = stat.S_IMODE(os.stat(path).st_mode)
-        assert mode == 0o600
+        if os.name == "nt":
+            environment = {**os.environ, "CANTRACK_CREDENTIALS_PATH": str(path)}
+            result = subprocess.run(
+                [
+                    "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                    "$ErrorActionPreference = 'Stop'; "
+                    "$acl = Get-Acl -LiteralPath $env:CANTRACK_CREDENTIALS_PATH; "
+                    "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User; "
+                    "$rules = @($acl.GetAccessRules($true, $true, "
+                    "[System.Security.Principal.SecurityIdentifier])); "
+                    "[PSCustomObject]@{Protected=$acl.AreAccessRulesProtected; "
+                    "Owner=$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; "
+                    "CurrentUser=$sid.Value; Count=$rules.Count; "
+                    "Trustee=$rules[0].IdentityReference.Value; "
+                    "Inherited=$rules[0].IsInherited; "
+                    "Rights=[int]$rules[0].FileSystemRights; "
+                    "Type=[string]$rules[0].AccessControlType} | ConvertTo-Json -Compress",
+                ],
+                env=environment, capture_output=True, text=True, check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            permissions = json.loads(result.stdout)
+            assert permissions == {
+                "Protected": True,
+                "Owner": permissions["CurrentUser"],
+                "CurrentUser": permissions["CurrentUser"],
+                "Count": 1,
+                "Trustee": permissions["CurrentUser"],
+                "Inherited": False,
+                "Rights": 2032127,
+                "Type": "Allow",
+            }
+        else:
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            assert mode == 0o600
         text = path.read_text()
         assert all(entry["email"] in text and entry["password"] in text for entry in credentials)
+
+    def test_credentials_are_not_written_if_permissions_cannot_be_restricted(
+        self, tmp_path, seeded, monkeypatch
+    ):
+        _, credentials = seeded
+        path = tmp_path / "demo-credentials.local.txt"
+
+        def refuse_permissions(*args, **kwargs):
+            raise PermissionError("Permission update refused.")
+
+        if os.name == "nt":
+            monkeypatch.setattr(seed_demo.subprocess, "run", refuse_permissions)
+        else:
+            monkeypatch.setattr(seed_demo.os, "chmod", refuse_permissions)
+        with pytest.raises(PermissionError, match="Permission update refused"):
+            write_credentials(path, credentials)
+        assert path.read_bytes() == b""
+        path.unlink()  # Also verifies that the failure did not leak an open handle.
 
     def test_the_default_credentials_file_is_git_ignored(self):
         backend = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))

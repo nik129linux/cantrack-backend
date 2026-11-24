@@ -38,6 +38,7 @@ from ..navigation import (
 )
 from ..owner_access import owner_from_path
 from .profile import avatar_urls
+from .dogs import _photo_paths
 
 router = APIRouter()
 
@@ -133,6 +134,10 @@ class DogCard(BaseModel):
 
     id: str | None
     name: str | None
+    breed: str | None = None
+    notes: str | None = None
+    photos: list[str] = Field(default_factory=list)
+    care: dict[str, Any] = Field(default_factory=dict)
 
 
 class WalkerCard(BaseModel):
@@ -749,6 +754,9 @@ def get_walk_detail(
             "durationMin": row.get("report_duration_min"),
         }
     )
+    dog_photo_paths = _photo_paths(row["owner_id"], row["dog_id"])
+    dog_photos = avatar_urls(supabase, dog_photo_paths)
+    dog_profile = dog.get("profile") or {}
 
     return {
         "id": row["id"],
@@ -756,7 +764,23 @@ def get_walk_detail(
         "requestedTime": row["requested_time"],
         "windowEnd": row.get("window_end"),
         "durationHours": row.get("duration_hours"),
-        "dog": {"id": dog.get("id"), "name": dog.get("name")},
+        "dog": {
+            "id": dog.get("id"),
+            "name": dog.get("name"),
+            "breed": dog.get("breed"),
+            "notes": dog.get("notes"),
+            "photos": [
+                dog_photos[path]
+                for path in dog_photo_paths
+                if path in dog_photos
+            ],
+            # Only share care details after assignment. Contact details remain owner-only.
+            "care": {
+                key: value
+                for key, value in dog_profile.items()
+                if key not in {"vet_contact", "emergency_contact"}
+            },
+        },
         "walker": {
             "id": walker_id,
             "name": profile.get("display_name"),

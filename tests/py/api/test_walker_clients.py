@@ -18,6 +18,30 @@ T_NEXT = "2026-10-03T15:00:00+00:00"
 NOT_A_CLIENT = {"detail": "Not one of your clients."}
 
 
+@pytest.mark.parametrize("status", ["assigned", "in_walk", "done"])
+def test_linked_walker_sees_only_their_dogs_reference_photos(fake_client, fake, data, status):
+    fake.seed("dogs", id="dog-private", owner_id="owner-a", name="Private", profile=None)
+    fake.storage.objects[("avatars", "owner-a/dogs/dog-luna/0.webp")] = b"photo"
+    fake.storage.objects[("avatars", "owner-a/dogs/dog-private/0.webp")] = b"private"
+    walk(fake, "photo-walk", status, T_NEXT, owner_id="owner-a", dog_id="dog-luna", walker_id="walker-v")
+    response = fake_client.get("/walkers/walker-v/clients/owner-a", headers=bearer("token-v"))
+    assert response.status_code == 200
+    dogs = response.json()["dogs"]
+    assert [dog["id"] for dog in dogs] == ["dog-luna"]
+    assert len(dogs[0]["photos"]) == 1
+    assert "/owner-a/dogs/dog-luna/0.webp?" in dogs[0]["photos"][0]
+    assert not any("dog-private" in str(call) for call in fake.storage.calls)
+    assert not any(call[1] == "public" for call in fake.storage.calls)
+
+
+@pytest.mark.parametrize("status", ["open", "cancelled", "expired"])
+def test_unassigned_walker_cannot_get_dog_photos(fake_client, fake, data, status):
+    walk(fake, "photo-unlinked", status, T_NEXT, owner_id="owner-a", dog_id="dog-luna", walker_id="walker-v")
+    response = fake_client.get("/walkers/walker-v/clients/owner-a", headers=bearer("token-v"))
+    assert response.status_code == 404
+    assert not fake.storage.calls
+
+
 def walk(fake, walk_id, status, requested_time, owner_id="owner-a", dog_id="dog-luna",
          walker_id="walker-w", price=20000):
     return fake.seed(
@@ -158,8 +182,8 @@ class TestDetail:
              "profile": {"size": "medium", "temperament": None, "energy": None, "leashTrained": True,
                          "allergies": None, "medicalNotes": "Artrosis", "vetContact": None,
                          "emergencyContact": None},
-             "note": None},
-            {"id": "dog-max", "name": "Max", "breed": None, "notes": None, "profile": None, "note": None},
+             "note": None, "photos": []},
+            {"id": "dog-max", "name": "Max", "breed": None, "notes": None, "profile": None, "note": None, "photos": []},
         ]
         assert [w["id"] for w in body["walks"]] == ["a3", "a2", "a1"]
         assert body["walks"][1] == {"id": "a2", "dogName": "Max", "status": "done",
