@@ -1,21 +1,23 @@
 # Source synchronization verification — 2026-11-24
 
-- Backend run excluding generated schema cases: 1,645 passed and one failed because a
-  strict response expectation predated the added `photos` field. The expected response
-  now includes `photos: []`; 156 related client/request/walk tests passed after correction.
-- Schemathesis API cases: 211 passed.
-- AI package: 85 passed and four model-dependent tests skipped.
-- Complete-repository Python run: 1,941 passed, four skipped and one workflow-contract
-  failure. The workflow's compatibility checkout was restored; 19 affected workflow,
-  RLS/schema and client-edge tests then passed. The hosted CI run checks the full final tree.
-- Dependency audit of the existing local backend environment: no known vulnerabilities;
-  the project packages `cantrack-api` and `cantrack-ai` have no PyPI advisory data and were skipped.
-- Owner and walker home previews were reviewed at 390 × 844; frontend tests (524), strict
-  TypeScript and production/PWA build passed in the complete repository.
+- Backend GitHub Actions: **1,857 tests passed** in the clean Ubuntu/Python 3.12
+  environment, including generated API cases, authentication, photo checks, user isolation,
+  handwritten data structures and schema/RLS contracts.
+- Hosted dependency audit: **no known vulnerabilities found**. The project packages
+  `cantrack-api` and `cantrack-ai` have no PyPI advisory data and were skipped by the scanner.
+- Backend CI evidence: https://github.com/nik129linux/cantrack-backend/actions/runs/45481626329
+- Frontend: 524 Vitest tests passed, strict TypeScript passed, and production/PWA build passed.
+  The separate frontend repository's hosted checks also passed before integration.
+- AI package: 85 passed; four model-dependent tests skipped.
+- Owner and walker home previews were reviewed at 390 × 844.
+- Gitleaks pre-commit checks passed. Token-like examples in the historical vulnerability
+  report were redacted before committing; production secrets were not added.
 
-Validation used the existing local Python environment and frontend dependency installation.
-It does not establish a clean Docker build, live AI correctness, real device GPS, or full
-physical iOS/Android behavior. SQL was reviewed and read by the test fakes; no production
+The CI evidence above validates the runtime source; subsequent delivery-link/documentation
+adjustments do not change the tested application code.
+
+These checks do not establish a fresh Docker build, live AI correctness, real device GPS,
+or full physical iOS/Android behavior. SQL was reviewed and read by test fakes; no production
 migration, seed, AWS deployment, or credential change was performed.
 
 Remaining warnings: Starlette's TestClient warns about future httpx compatibility, four
