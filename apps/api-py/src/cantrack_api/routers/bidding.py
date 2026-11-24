@@ -74,6 +74,7 @@ from ..uploads import MAX_IMAGE_BYTES, read_image
 from ..walk_photo_ai import ChainCondition, condition_label
 from ..walker_access import ensure_walker_profile, is_online
 from .profile import avatar_urls
+from .dogs import _photo_paths
 from ..walk_report import build_and_store_walk_report
 from ..replay import (
     BACKWARD,
@@ -221,6 +222,10 @@ class OpenRequestCardView(BaseModel):
     deadlineAt: str
     paymentMethod: str | None = None
     dogName: str | None = None
+    dogPhotos: list[str] = Field(default_factory=list)
+    dogBreed: str | None = None
+    dogNotes: str | None = None
+    dogCare: dict[str, Any] = Field(default_factory=dict)
     ownerName: str | None = None
     fareCop: int
     #: Highest counter offer: twice the fare, capped at three times the recommended price.
@@ -315,9 +320,16 @@ def _request_cards(
     request_ids = [row["id"] for row in rows]
     dog_ids = sorted({row["dog_id"] for row in rows})
     owner_ids = sorted({row["owner_id"] for row in rows})
+    photo_paths = {
+        (row["owner_id"], row["dog_id"]): _photo_paths(row["owner_id"], row["dog_id"])
+        for row in rows
+    }
+    signed_photos = avatar_urls(
+        supabase, [path for paths in photo_paths.values() for path in paths]
+    )
 
-    dog_names = {
-        dog["id"]: dog.get("name")
+    dogs = {
+        dog["id"]: dog
         for dog in run_query(
             supabase.table(DOGS_TABLE).select("*").in_("id", dog_ids)
         )
@@ -351,7 +363,19 @@ def _request_cards(
             {
                 # The counter stops at twice the fare and at three times the recommended price.
                 "maxCounterCop": min(COUNTER_FARE_MULTIPLIER * fare_cop, ceiling),
-                "dogName": dog_names.get(row["dog_id"]),
+                "dogName": (dogs.get(row["dog_id"]) or {}).get("name"),
+                "dogBreed": (dogs.get(row["dog_id"]) or {}).get("breed"),
+                "dogNotes": (dogs.get(row["dog_id"]) or {}).get("notes"),
+                "dogCare": {
+                    key: value
+                    for key, value in ((dogs.get(row["dog_id"]) or {}).get("profile") or {}).items()
+                    if key in {"size", "temperament", "energy", "leash_trained"}
+                },
+                "dogPhotos": [
+                    signed_photos[path]
+                    for path in photo_paths[(row["owner_id"], row["dog_id"])]
+                    if path in signed_photos
+                ],
                 "ownerName": owner_names.get(row["owner_id"]),
                 "fareCop": fare_cop,
                 "distanceKm": round(

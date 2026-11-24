@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import subprocess
 import sys
 import uuid
 from datetime import datetime, timedelta
@@ -558,9 +559,9 @@ def reset_demo(supabase: Any) -> int:
 def write_credentials(path: Any, credentials: list[dict[str, str]]) -> None:
     """Write the demo credentials to ``path`` with owner-only permissions.
 
-    The file is created (or truncated) with mode ``0600`` and the mode is
-    re-applied afterwards, so an existing looser file cannot keep its
-    permissions.
+    POSIX uses mode ``0600``; Windows uses a protected, owner-only ACL.
+    Permissions are restricted before any credential is written, including
+    when replacing a file with looser permissions. ACL failures abort writes.
 
     Big-O: O(c) in the number of credential entries.
 
@@ -570,6 +571,30 @@ def write_credentials(path: Any, credentials: list[dict[str, str]]) -> None:
     """
     target = os.fspath(path)
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                [
+                    "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                    "$ErrorActionPreference = 'Stop'; "
+                    "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User; "
+                    "$acl = New-Object System.Security.AccessControl.FileSecurity; "
+                    "$acl.SetOwner($sid); "
+                    "$acl.SetAccessRuleProtection($true, $false); "
+                    "$rule = New-Object System.Security.AccessControl.FileSystemAccessRule"
+                    "($sid, 'FullControl', 'Allow'); "
+                    "$acl.AddAccessRule($rule); "
+                    "Set-Acl -LiteralPath $env:CANTRACK_CREDENTIALS_PATH -AclObject $acl",
+                ],
+                env={**os.environ, "CANTRACK_CREDENTIALS_PATH": os.path.abspath(target)},
+                capture_output=True, check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        else:
+            os.chmod(target, 0o600)
+    except Exception:
+        os.close(descriptor)
+        raise
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write("# CanTrack demo credentials. Do not commit this file.\n")
         handle.write("# email\tpassword\trole\n")

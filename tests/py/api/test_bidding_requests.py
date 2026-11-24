@@ -142,6 +142,26 @@ class TestPickupLabel:
 
 
 class TestVisibleOpenList:
+    def test_eligible_walker_gets_public_dog_care_and_reference_photos(self, fake_client, fake):
+        seed_dog(fake)
+        fake.tables["dogs"][0].update(
+            breed="Poodle", notes="Llevar agua",
+            profile={"size": "small", "temperament": "friendly", "leash_trained": True,
+                     "medical_notes": "privado", "vet_contact": "555"},
+        )
+        fake.storage.objects[("avatars", "owner-a/dogs/dog-1/0.webp")] = b"photo"
+        seed_open(fake)
+        fake.seed("walker_positions", walker_id="walker-w", lat=6.201, lng=-75.5,
+                 updated_at="2026-10-01T00:00:00+00:00")
+        response = fake_client.get("/bidding/requests/open", headers=bearer("token-w"))
+        assert response.status_code == 200
+        card = response.json()[0]
+        assert card["dogBreed"] == "Poodle"
+        assert card["dogNotes"] == "Llevar agua"
+        assert card["dogCare"] == {"size": "small", "temperament": "friendly", "leash_trained": True}
+        assert len(card["dogPhotos"]) == 1
+        assert "dog-1/0.webp?" in card["dogPhotos"][0]
+
     def test_free_walker_inside_radius_sees_it(self, fake_client, fake):
         seed_dog(fake)
         seed_open(fake)

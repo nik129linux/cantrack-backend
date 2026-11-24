@@ -97,6 +97,26 @@ class TestOnlineGate:
 
 
 class TestCard:
+    def test_visible_request_includes_signed_reference_photos_before_accepting(self, fake_client, data):
+        seed_open(data)
+        place(data)
+        data.storage.objects[("avatars", "owner-a/dogs/dog-1/0.webp")] = b"photo"
+        data.storage.objects[("avatars", "owner-a/dogs/dog-2/0.webp")] = b"unrelated"
+        response = open_list(fake_client)
+        assert response.status_code == 200
+        photos = response.json()[0]["dogPhotos"]
+        assert len(photos) == 1
+        assert "/owner-a/dogs/dog-1/0.webp?" in photos[0]
+        assert not any("dog-2" in str(call) for call in data.storage.calls)
+        assert not data.tables.get("walk_offers")
+
+    def test_offline_walker_never_gets_photo_links(self, fake_client, data):
+        seed_open(data)
+        place(data, seconds_ago=600)
+        data.storage.objects[("avatars", "owner-a/dogs/dog-1/0.webp")] = b"photo"
+        assert open_list(fake_client).json() == []
+        assert not data.storage.calls
+
     def test_card_explains_the_request_without_leaking_the_owner(self, fake_client, data):
         seed_open(data)
         place(data)

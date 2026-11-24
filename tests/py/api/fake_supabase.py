@@ -53,6 +53,7 @@ def _normalize_timestamps(payload: Any) -> Any:
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[3]
 _SCHEMA_CANDIDATES = [
+    _BACKEND / "apps" / "api-py" / "schema.sql",
     _BACKEND.parent / "cantrack-db" / "apps" / "api-py" / "schema.sql",
     _BACKEND / "cantrack-db" / "apps" / "api-py" / "schema.sql",
 ]

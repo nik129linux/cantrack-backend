@@ -12,7 +12,7 @@ from supabase import Client
 from supabase_auth.errors import AuthError
 from supabase_auth.types import User
 
-from ..app import limiter
+from ..app import client_ip_key, limiter
 from ..deps import account_roles, current_role, get_auth_client, get_current_user, get_now, get_supabase
 from ..login_guard import LoginGuard, get_login_guard
 from ..schemas import (
@@ -96,7 +96,7 @@ def _bearer_token(request: Request) -> str:
 
 
 @router.post("/signup", status_code=status.HTTP_201_CREATED)
-@limiter.limit("5/minute")
+@limiter.limit("5/minute", key_func=client_ip_key)
 def signup(
     request: Request,
     body: SignupBody,
@@ -184,7 +184,7 @@ def _seed_owner_profile(owner_id: str, full_name: str | None, phone: str | None)
 
 
 @router.post("/login")
-@limiter.limit("5/minute")
+@limiter.limit("5/minute", key_func=client_ip_key)
 def login(
     request: Request,
     body: LoginBody,
@@ -252,7 +252,7 @@ def login(
 
 
 @router.post("/reset-password")
-@limiter.limit("5/minute")
+@limiter.limit("5/minute", key_func=client_ip_key)
 def reset_password(
     request: Request,
     body: ResetPasswordBody,
@@ -289,7 +289,7 @@ def reset_password(
 @router.post(
     "/resend-verification", response_model=ResendVerificationResponse
 )
-@limiter.limit("3/minute")
+@limiter.limit("3/minute", key_func=client_ip_key)
 def resend_verification(
     request: Request,
     body: ResendVerificationBody,
@@ -322,7 +322,7 @@ def resend_verification(
 
 
 @router.post("/refresh", response_model=RefreshResponse)
-@limiter.limit("30/minute")
+@limiter.limit("30/minute", key_func=client_ip_key)
 def refresh(
     request: Request,
     body: RefreshBody,

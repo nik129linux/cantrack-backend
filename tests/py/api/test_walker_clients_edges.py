@@ -94,7 +94,7 @@ class TestMissingDog:
         assert res.status_code == 200
         assert res.json()["dogs"] == [
             {"id": "dog-gone", "name": None, "breed": None, "notes": None,
-             "profile": None, "note": None}
+             "profile": None, "note": None, "photos": []}
         ]
         assert res.json()["walks"][0]["dogName"] is None
 

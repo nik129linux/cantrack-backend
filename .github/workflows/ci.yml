@@ -18,5 +18,8 @@ jobs:
           repository: nik129linux/cantrack-db
           path: cantrack-db
       - uses: astral-sh/setup-uv@v5
-      - run: uv run pytest -q ../../tests
-      - run: uvx pip-audit
+        with:
+          python-version: '3.12'
+      - run: uv sync --frozen
+      - run: uv run --no-sync pytest -q ../../tests/py
+      - run: uv run --no-sync pip-audit

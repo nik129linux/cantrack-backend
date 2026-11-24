@@ -26,6 +26,7 @@ from ..db import run_query
 from ..deps import get_now, get_supabase
 from ..walker_access import walker_from_path
 from .clients import profile_to_api
+from .dogs import _photo_paths
 from .profile import _signed_avatar, avatar_urls
 
 router = APIRouter()
@@ -96,6 +97,8 @@ class DetailDog(BaseModel):
     profile: dict[str, Any] | None
     #: The walker's own private note, never shown to the owner.
     note: str | None
+    #: Private reference photos, signed only after checking the walker/client link.
+    photos: list[str] = Field(default_factory=list)
 
 
 class ClientCare(BaseModel):
@@ -520,6 +523,10 @@ def get_client(
     dogs = _load_dogs(supabase, dog_ids, with_profile=True)
     profile = _load_profiles(supabase, {owner_id}, full=True).get(owner_id, {})
     notes = _load_notes(supabase, walker.id, dog_ids)
+    photo_paths = {dog_id: _photo_paths(owner_id, dog_id) for dog_id in dog_ids}
+    signed_photos = avatar_urls(
+        supabase, [path for paths in photo_paths.values() for path in paths]
+    )
 
     live = any(walk["status"] in UPCOMING_STATUSES for walk in walks)
 
@@ -532,6 +539,7 @@ def get_client(
                 notes=dogs.get(dog_id, {}).get("notes"),
                 profile=profile_to_api(dogs.get(dog_id, {}).get("profile")),
                 note=notes.get(dog_id),
+                photos=[signed_photos[path] for path in photo_paths[dog_id] if path in signed_photos],
             )
             for dog_id in dog_ids
         ),
